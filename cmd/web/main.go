@@ -21,6 +21,7 @@ import (
 	"github.com/ernestns/daily-docs/internal/activation"
 	"github.com/ernestns/daily-docs/internal/db"
 	"github.com/ernestns/daily-docs/internal/pipeline"
+	"github.com/ernestns/daily-docs/internal/queue"
 	"github.com/ernestns/daily-docs/internal/reading"
 	"github.com/ernestns/daily-docs/internal/seed"
 	"github.com/ernestns/daily-docs/internal/submission"
@@ -743,6 +744,35 @@ func runCommand(ctx context.Context, args []string) error {
 		}
 
 		log.Printf("activated candidates submission_id=%d topic=%s pages=%d", result.SubmissionID, result.TopicSlug, result.Activated)
+		return nil
+	case "process-pending-submissions":
+		limit := 5
+		if len(args) > 3 {
+			return fmt.Errorf("usage: dailydocs process-pending-submissions [--limit N]")
+		}
+		if len(args) == 3 {
+			if args[1] != "--limit" {
+				return fmt.Errorf("usage: dailydocs process-pending-submissions [--limit N]")
+			}
+			parsedLimit, err := strconv.Atoi(args[2])
+			if err != nil || parsedLimit < 1 {
+				return fmt.Errorf("limit must be a positive integer")
+			}
+			limit = parsedLimit
+		}
+
+		conn, err := db.Open(ctx, os.Getenv("DB_PATH"))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		result, err := queue.ProcessPending(ctx, conn, queue.Options{Limit: limit})
+		if err != nil {
+			return err
+		}
+
+		log.Printf("processed pending submissions claimed=%d processed=%d failed=%d", result.Claimed, result.Processed, result.Failed)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
