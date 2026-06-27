@@ -634,6 +634,9 @@ Recovery should be documented and tested before scheduled processing becomes imp
 - Read status
 - Comments
 - Documentation source discovery
+- Protected admin pipeline UI
+- Page deactivation
+- Topic and page metadata editing
 - User feedback on pending submissions and active readings
 - Moderation
 - Optional AI summaries, quizzes, difficulty estimation, or tagging

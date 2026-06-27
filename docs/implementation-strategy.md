@@ -18,17 +18,24 @@ Completed:
 5. Topic search and reading URL generation UI
 6. Link validator
 7. Backup and restore scripts
-
-Next:
-
 8. Documentation submission queue
 9. Minimal candidate pipeline
 10. Manual activation
 11. Queue runner
+12. Pipeline inspection commands
+13. Topic index page
+14. Missing-topic submission fallback
+15. Topic lookup combobox
+
+Next:
+
+16. Minimal protected admin UI
 
 Backlog:
 
 - Feedback and moderation
+- Deactivate active pages
+- Edit active topic and page metadata
 - Optional AI review layer
 - Scheduled offsite backups
 
@@ -426,6 +433,63 @@ Log per pipeline run:
 - rejected count
 - duration
 
+## Minimal Protected Admin UI
+
+The admin UI should remove the need to SSH for routine content pipeline work.
+
+It should not be publicly linked from the homepage, topics page, submissions page, or README. This is not a security boundary; admin routes still require authentication because the public repository makes the routes discoverable.
+
+Initial auth:
+
+- `ADMIN_TOKEN` environment variable
+- no default token
+- admin routes return `404` when `ADMIN_TOKEN` is unset
+- login form posts the token in the request body
+- successful login sets an `HttpOnly`, `Secure`, `SameSite=Lax` cookie
+- no tokens in URLs
+- no secrets in repository docs, tests, fixtures, or scripts
+
+Initial routes:
+
+```text
+GET  /admin/login
+POST /admin/login
+GET  /admin
+GET  /admin/submissions
+GET  /admin/submissions/{id}
+POST /admin/submissions/{id}/process
+POST /admin/submissions/{id}/activate
+```
+
+Initial scope:
+
+- list submissions
+- show submission details
+- show pipeline runs
+- show candidate pages with title, URL, classification, score, status, and reason
+- process pending or failed submissions
+- activate candidates for `candidates_ready` submissions
+- show command errors in the admin page without exposing them publicly
+
+Out of scope:
+
+- user accounts
+- roles
+- public admin links
+- editing active pages
+- deactivating active pages
+- backup/restore
+- deployment, systemd, Caddy, or server operations
+
+Definition of done:
+
+- Admin UI is inaccessible when `ADMIN_TOKEN` is unset.
+- Admin login sets a protected cookie.
+- Unauthenticated admin requests do not expose pipeline data.
+- Process and activate actions require POST.
+- Process and activate actions are covered by tests.
+- Existing CLI commands remain available.
+
 ## Backlog: Feedback and Moderation
 
 Feedback should come after the queue and candidate pipeline exist.
@@ -437,6 +501,32 @@ Possible features:
 - suggest topic name edits
 - suggest better source URLs
 - mark active readings as wrong topic, not documentation, broken, or duplicate
+
+Definition of done is intentionally deferred.
+
+## Backlog: Deactivate Active Pages
+
+Admin users may later need to remove a page from future readings without deleting historical records.
+
+Possible features:
+
+- deactivate an active page
+- show whether a page appears in historical `daily_readings`
+- prevent hard deletion from routine admin UI
+- record a deactivation reason
+
+Definition of done is intentionally deferred.
+
+## Backlog: Edit Active Topic and Page Metadata
+
+Admin users may later need to fix imported metadata without touching SQLite directly.
+
+Possible features:
+
+- edit topic name and description
+- edit page title, source, official flag, estimated minutes, difficulty, and evergreen score
+- keep URL edits conservative because URL changes can affect historical readings and link validation
+- record updated time and reason
 
 Definition of done is intentionally deferred.
 
