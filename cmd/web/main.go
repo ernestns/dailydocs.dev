@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,6 +71,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/admin", app.adminHandler)
+	mux.HandleFunc("/admin/", app.adminHandler)
 	mux.HandleFunc("/submissions", app.submissionsHandler)
 	mux.HandleFunc("/topics", app.topicsHandler)
 	mux.HandleFunc("/topics/search", app.searchTopicsHandler)
@@ -389,6 +394,406 @@ func clientIP(r *http.Request) string {
 		return strings.TrimSpace(r.RemoteAddr)
 	}
 	return strings.TrimSpace(host)
+}
+
+const adminSessionCookie = "dailydocs_admin"
+const adminSessionTTL = 12 * time.Hour
+
+type adminSubmissionRow struct {
+	ID             int64
+	SuggestedTopic string
+	SourceHost     string
+	Status         string
+	RequestCount   int
+	LastSubmitted  string
+	LastError      string
+}
+
+type adminSubmissionDetail struct {
+	ID             int64
+	SuggestedTopic string
+	SourceHost     string
+	Status         string
+	RequestCount   int
+	SubmittedURL   string
+	NormalizedURL  string
+	LastSubmitted  string
+	LastError      string
+	Runs           []adminRunRow
+	Candidates     []adminCandidateRow
+}
+
+type adminRunRow struct {
+	ID              int64
+	Status          string
+	StartedAt       string
+	CompletedAt     string
+	DiscoveredCount int
+	CrawledCount    int
+	EligibleCount   int
+	RejectedCount   int
+	FailureCount    int
+	Error           string
+}
+
+type adminCandidateRow struct {
+	ID               int64
+	Title            string
+	URL              string
+	Classification   string
+	Score            int
+	Status           string
+	EstimatedMinutes string
+	Reason           string
+}
+
+func (a app) adminHandler(w http.ResponseWriter, r *http.Request) {
+	token := os.Getenv("ADMIN_TOKEN")
+	if token == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	if path == "" {
+		path = "/admin"
+	}
+
+	if path == "/admin/login" {
+		a.adminLoginHandler(w, r, token)
+		return
+	}
+
+	if !validAdminSession(r, token) {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
+
+	switch {
+	case path == "/admin":
+		http.Redirect(w, r, "/admin/submissions", http.StatusSeeOther)
+	case path == "/admin/submissions":
+		a.adminSubmissionsHandler(w, r, token)
+	case strings.HasPrefix(path, "/admin/submissions/"):
+		a.adminSubmissionHandler(w, r, token, path)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (a app) adminLoginHandler(w http.ResponseWriter, r *http.Request, token string) {
+	switch r.Method {
+	case http.MethodGet:
+		renderTemplate(w, adminLoginTemplate, struct{ Error string }{})
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		if !constantTimeEqual(r.Form.Get("token"), token) {
+			log.Printf("admin login failed ip=%s", clientIP(r))
+			renderTemplate(w, adminLoginTemplate, struct{ Error string }{Error: "Invalid token"})
+			return
+		}
+		setAdminSession(w, token)
+		http.Redirect(w, r, "/admin/submissions", http.StatusSeeOther)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (a app) adminSubmissionsHandler(w http.ResponseWriter, r *http.Request, token string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	submissions, err := adminListSubmissions(r.Context(), a.db)
+	if err != nil {
+		log.Printf("admin list submissions failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	renderTemplate(w, adminSubmissionsTemplate, struct {
+		Submissions []adminSubmissionRow
+		CSRF        string
+		Notice      string
+		Error       string
+	}{
+		Submissions: submissions,
+		CSRF:        csrfToken(r, token),
+		Notice:      r.URL.Query().Get("notice"),
+		Error:       r.URL.Query().Get("error"),
+	})
+}
+
+func (a app) adminSubmissionHandler(w http.ResponseWriter, r *http.Request, token string, path string) {
+	rest := strings.TrimPrefix(path, "/admin/submissions/")
+	parts := strings.Split(rest, "/")
+	if len(parts) < 1 || len(parts) > 2 {
+		http.NotFound(w, r)
+		return
+	}
+	submissionID, err := parsePositiveID(parts[0], "submission-id")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		a.adminSubmissionDetailHandler(w, r, token, submissionID)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !validCSRF(r, token) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	switch parts[1] {
+	case "process":
+		_, err := pipeline.ProcessSubmission(r.Context(), a.db, submissionID, pipeline.Options{})
+		if err != nil {
+			log.Printf("admin process submission failed id=%d error=%v", submissionID, err)
+			redirectAdminSubmission(w, r, submissionID, "", err.Error())
+			return
+		}
+		redirectAdminSubmission(w, r, submissionID, "processed", "")
+	case "activate":
+		_, err := activation.ActivateCandidates(r.Context(), a.db, submissionID)
+		if err != nil {
+			log.Printf("admin activate candidates failed id=%d error=%v", submissionID, err)
+			redirectAdminSubmission(w, r, submissionID, "", err.Error())
+			return
+		}
+		redirectAdminSubmission(w, r, submissionID, "activated", "")
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (a app) adminSubmissionDetailHandler(w http.ResponseWriter, r *http.Request, token string, submissionID int64) {
+	detail, err := adminGetSubmission(r.Context(), a.db, submissionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("admin show submission failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	renderTemplate(w, adminSubmissionDetailTemplate, struct {
+		Submission adminSubmissionDetail
+		CSRF       string
+		Notice     string
+		Error      string
+	}{
+		Submission: detail,
+		CSRF:       csrfToken(r, token),
+		Notice:     r.URL.Query().Get("notice"),
+		Error:      r.URL.Query().Get("error"),
+	})
+}
+
+func adminListSubmissions(ctx context.Context, conn *sql.DB) ([]adminSubmissionRow, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT id, suggested_topic, source_host, status, request_count, last_submitted_at, last_error
+		FROM documentation_submissions
+		ORDER BY id DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query admin submissions: %w", err)
+	}
+	defer rows.Close()
+
+	var submissions []adminSubmissionRow
+	for rows.Next() {
+		var sub adminSubmissionRow
+		if err := rows.Scan(&sub.ID, &sub.SuggestedTopic, &sub.SourceHost, &sub.Status, &sub.RequestCount, &sub.LastSubmitted, &sub.LastError); err != nil {
+			return nil, fmt.Errorf("scan admin submission: %w", err)
+		}
+		submissions = append(submissions, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate admin submissions: %w", err)
+	}
+	return submissions, nil
+}
+
+func adminGetSubmission(ctx context.Context, conn *sql.DB, submissionID int64) (adminSubmissionDetail, error) {
+	var detail adminSubmissionDetail
+	err := conn.QueryRowContext(ctx, `
+		SELECT id, suggested_topic, source_host, status, request_count, submitted_url, normalized_url, last_submitted_at, last_error
+		FROM documentation_submissions
+		WHERE id = ?
+	`, submissionID).Scan(&detail.ID, &detail.SuggestedTopic, &detail.SourceHost, &detail.Status, &detail.RequestCount, &detail.SubmittedURL, &detail.NormalizedURL, &detail.LastSubmitted, &detail.LastError)
+	if err != nil {
+		return adminSubmissionDetail{}, err
+	}
+
+	runs, err := adminListRuns(ctx, conn, submissionID)
+	if err != nil {
+		return adminSubmissionDetail{}, err
+	}
+	candidates, err := adminListCandidates(ctx, conn, submissionID)
+	if err != nil {
+		return adminSubmissionDetail{}, err
+	}
+	detail.Runs = runs
+	detail.Candidates = candidates
+	return detail, nil
+}
+
+func adminListRuns(ctx context.Context, conn *sql.DB, submissionID int64) ([]adminRunRow, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT id, status, started_at, completed_at, discovered_count, crawled_count, eligible_count, rejected_count, failure_count, error
+		FROM pipeline_runs
+		WHERE documentation_submission_id = ?
+		ORDER BY id DESC
+	`, submissionID)
+	if err != nil {
+		return nil, fmt.Errorf("query admin runs: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []adminRunRow
+	for rows.Next() {
+		var run adminRunRow
+		var completed sql.NullString
+		if err := rows.Scan(&run.ID, &run.Status, &run.StartedAt, &completed, &run.DiscoveredCount, &run.CrawledCount, &run.EligibleCount, &run.RejectedCount, &run.FailureCount, &run.Error); err != nil {
+			return nil, fmt.Errorf("scan admin run: %w", err)
+		}
+		run.CompletedAt = "-"
+		if completed.Valid && completed.String != "" {
+			run.CompletedAt = completed.String
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate admin runs: %w", err)
+	}
+	return runs, nil
+}
+
+func adminListCandidates(ctx context.Context, conn *sql.DB, submissionID int64) ([]adminCandidateRow, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT id, title, url, primary_classification, score, status, estimated_minutes, reason
+		FROM page_candidates
+		WHERE documentation_submission_id = ?
+		ORDER BY score DESC, title ASC
+	`, submissionID)
+	if err != nil {
+		return nil, fmt.Errorf("query admin candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []adminCandidateRow
+	for rows.Next() {
+		var cand adminCandidateRow
+		var estimated sql.NullInt64
+		if err := rows.Scan(&cand.ID, &cand.Title, &cand.URL, &cand.Classification, &cand.Score, &cand.Status, &estimated, &cand.Reason); err != nil {
+			return nil, fmt.Errorf("scan admin candidate: %w", err)
+		}
+		cand.EstimatedMinutes = "-"
+		if estimated.Valid {
+			cand.EstimatedMinutes = strconv.FormatInt(estimated.Int64, 10)
+		}
+		candidates = append(candidates, cand)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate admin candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func redirectAdminSubmission(w http.ResponseWriter, r *http.Request, submissionID int64, notice string, errorMessage string) {
+	values := url.Values{}
+	if notice != "" {
+		values.Set("notice", notice)
+	}
+	if errorMessage != "" {
+		values.Set("error", errorMessage)
+	}
+	target := fmt.Sprintf("/admin/submissions/%d", submissionID)
+	if encoded := values.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func setAdminSession(w http.ResponseWriter, token string) {
+	issuedAt := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	signature := signAdminValue(issuedAt, token)
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookie,
+		Value:    issuedAt + "." + signature,
+		Path:     "/admin",
+		MaxAge:   int(adminSessionTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func validAdminSession(r *http.Request, token string) bool {
+	cookie, err := r.Cookie(adminSessionCookie)
+	if err != nil {
+		return false
+	}
+	issuedAt, signature, ok := strings.Cut(cookie.Value, ".")
+	if !ok || issuedAt == "" || signature == "" {
+		return false
+	}
+	expected := signAdminValue(issuedAt, token)
+	if !constantTimeEqual(signature, expected) {
+		return false
+	}
+	issuedUnix, err := strconv.ParseInt(issuedAt, 10, 64)
+	if err != nil {
+		return false
+	}
+	issued := time.Unix(issuedUnix, 0)
+	return time.Since(issued) >= 0 && time.Since(issued) <= adminSessionTTL
+}
+
+func csrfToken(r *http.Request, token string) string {
+	cookie, err := r.Cookie(adminSessionCookie)
+	if err != nil {
+		return ""
+	}
+	return signAdminValue("csrf:"+cookie.Value, token)
+}
+
+func validCSRF(r *http.Request, token string) bool {
+	if err := r.ParseForm(); err != nil {
+		return false
+	}
+	return constantTimeEqual(r.Form.Get("csrf"), csrfToken(r, token))
+}
+
+func signAdminValue(value string, token string) string {
+	mac := hmac.New(sha256.New, []byte(token))
+	_, _ = mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func constantTimeEqual(left string, right string) bool {
+	return hmac.Equal([]byte(left), []byte(right))
 }
 
 var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
@@ -950,6 +1355,186 @@ var readingTemplate = template.Must(template.New("reading").Parse(`<!doctype htm
       <a class="button" href="{{.URL}}">Read</a>
       <nav><a href="/topics">All topics</a></nav>
     </article>
+  </main>
+</body>
+</html>
+`))
+
+var adminLoginTemplate = template.Must(template.New("admin-login").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Admin - DailyDocs</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1f2933; background: #f7f8fa; }
+    main { width: min(28rem, 100%); margin: 0 auto; padding: 2rem; box-sizing: border-box; }
+    h1 { margin: 0 0 1rem; font-size: 2rem; }
+    form { display: grid; gap: 0.75rem; }
+    input { padding: 0.75rem 0.875rem; border: 1px solid #cbd2d9; border-radius: 6px; font: inherit; }
+    button { justify-self: start; padding: 0.75rem 1rem; border: 0; border-radius: 6px; font: inherit; color: #fff; background: #1f2933; cursor: pointer; }
+    .error { color: #b42318; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Admin</h1>
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    <form method="post" action="/admin/login">
+      <label>
+        Admin token
+        <input name="token" type="password" autocomplete="current-password" autofocus>
+      </label>
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>
+`))
+
+var adminSubmissionsTemplate = template.Must(template.New("admin-submissions").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Admin Submissions - DailyDocs</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1f2933; background: #f7f8fa; }
+    main { width: min(68rem, 100%); margin: 0 auto; padding: 2rem; box-sizing: border-box; }
+    h1 { margin: 0 0 1rem; font-size: 2rem; }
+    table { width: 100%; border-collapse: collapse; background: #fff; }
+    th, td { padding: 0.75rem; border-bottom: 1px solid #e4e7eb; text-align: left; vertical-align: top; }
+    th { color: #52606d; font-size: 0.875rem; }
+    a { color: #1f2933; }
+    .notice { color: #067647; }
+    .error { color: #b42318; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Submissions</h1>
+    {{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    {{if .Submissions}}
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Topic</th>
+          <th>Source</th>
+          <th>Status</th>
+          <th>Requests</th>
+          <th>Last submitted</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Submissions}}
+        <tr>
+          <td><a href="/admin/submissions/{{.ID}}">{{.ID}}</a></td>
+          <td>{{if .SuggestedTopic}}{{.SuggestedTopic}}{{else}}-{{end}}</td>
+          <td>{{.SourceHost}}</td>
+          <td>{{.Status}}</td>
+          <td>{{.RequestCount}}</td>
+          <td>{{.LastSubmitted}}</td>
+          <td>{{if .LastError}}{{.LastError}}{{else}}-{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p>No submissions.</p>
+    {{end}}
+  </main>
+</body>
+</html>
+`))
+
+var adminSubmissionDetailTemplate = template.Must(template.New("admin-submission-detail").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Submission {{.Submission.ID}} - DailyDocs</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1f2933; background: #f7f8fa; }
+    main { width: min(76rem, 100%); margin: 0 auto; padding: 2rem; box-sizing: border-box; }
+    h1, h2 { margin: 0 0 1rem; }
+    section { margin-top: 2rem; }
+    dl { display: grid; grid-template-columns: 12rem 1fr; gap: 0.5rem 1rem; }
+    dt { color: #52606d; }
+    dd { margin: 0; }
+    table { width: 100%; border-collapse: collapse; background: #fff; }
+    th, td { padding: 0.75rem; border-bottom: 1px solid #e4e7eb; text-align: left; vertical-align: top; }
+    th { color: #52606d; font-size: 0.875rem; }
+    form { display: inline; margin-right: 0.5rem; }
+    button { padding: 0.6rem 0.85rem; border: 0; border-radius: 6px; font: inherit; color: #fff; background: #1f2933; cursor: pointer; }
+    a { color: #1f2933; }
+    .notice { color: #067647; }
+    .error { color: #b42318; }
+    .url { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <p><a href="/admin/submissions">Submissions</a></p>
+    <h1>Submission {{.Submission.ID}}</h1>
+    {{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+
+    <form method="post" action="/admin/submissions/{{.Submission.ID}}/process">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit">Process</button>
+    </form>
+    <form method="post" action="/admin/submissions/{{.Submission.ID}}/activate">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit">Activate Candidates</button>
+    </form>
+
+    <section>
+      <h2>Details</h2>
+      <dl>
+        <dt>Topic</dt><dd>{{if .Submission.SuggestedTopic}}{{.Submission.SuggestedTopic}}{{else}}-{{end}}</dd>
+        <dt>Source</dt><dd>{{.Submission.SourceHost}}</dd>
+        <dt>Status</dt><dd>{{.Submission.Status}}</dd>
+        <dt>Requests</dt><dd>{{.Submission.RequestCount}}</dd>
+        <dt>Submitted URL</dt><dd class="url">{{.Submission.SubmittedURL}}</dd>
+        <dt>Normalized URL</dt><dd class="url">{{.Submission.NormalizedURL}}</dd>
+        <dt>Last submitted</dt><dd>{{.Submission.LastSubmitted}}</dd>
+        <dt>Last error</dt><dd>{{if .Submission.LastError}}{{.Submission.LastError}}{{else}}-{{end}}</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Runs</h2>
+      {{if .Submission.Runs}}
+      <table>
+        <thead><tr><th>ID</th><th>Status</th><th>Started</th><th>Completed</th><th>Discovered</th><th>Crawled</th><th>Eligible</th><th>Rejected</th><th>Failed</th><th>Error</th></tr></thead>
+        <tbody>
+          {{range .Submission.Runs}}
+          <tr><td>{{.ID}}</td><td>{{.Status}}</td><td>{{.StartedAt}}</td><td>{{.CompletedAt}}</td><td>{{.DiscoveredCount}}</td><td>{{.CrawledCount}}</td><td>{{.EligibleCount}}</td><td>{{.RejectedCount}}</td><td>{{.FailureCount}}</td><td>{{if .Error}}{{.Error}}{{else}}-{{end}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}<p>No runs.</p>{{end}}
+    </section>
+
+    <section>
+      <h2>Candidates</h2>
+      {{if .Submission.Candidates}}
+      <table>
+        <thead><tr><th>ID</th><th>Score</th><th>Status</th><th>Min</th><th>Class</th><th>Title</th><th>URL</th><th>Reason</th></tr></thead>
+        <tbody>
+          {{range .Submission.Candidates}}
+          <tr><td>{{.ID}}</td><td>{{.Score}}</td><td>{{.Status}}</td><td>{{.EstimatedMinutes}}</td><td>{{.Classification}}</td><td>{{.Title}}</td><td class="url">{{.URL}}</td><td>{{.Reason}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}<p>No candidates.</p>{{end}}
+    </section>
   </main>
 </body>
 </html>

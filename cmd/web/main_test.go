@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -369,6 +370,145 @@ func TestSubmissionsPageShowsSafePublicFields(t *testing.T) {
 	}
 }
 
+func TestAdminDisabledReturnsNotFound(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "")
+
+	handler := newTestHandler(nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin", nil))
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", response.Code)
+	}
+}
+
+func TestAdminLoginSetsSessionCookie(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "test-admin-token")
+
+	handler := newTestHandler(nil)
+	form := url.Values{"token": {"test-admin-token"}}
+	request := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", response.Code)
+	}
+	if location := response.Header().Get("Location"); location != "/admin/submissions" {
+		t.Fatalf("expected redirect to admin submissions, got %q", location)
+	}
+	cookie := findCookie(response.Result().Cookies(), adminSessionCookie)
+	if cookie == nil {
+		t.Fatal("expected admin session cookie")
+	}
+	if !cookie.HttpOnly {
+		t.Fatal("expected admin session cookie to be HttpOnly")
+	}
+	if !cookie.Secure {
+		t.Fatal("expected admin session cookie to be Secure")
+	}
+}
+
+func TestAdminRequiresAuth(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "test-admin-token")
+
+	handler := newTestHandler(nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/submissions", nil))
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", response.Code)
+	}
+	if location := response.Header().Get("Location"); location != "/admin/login" {
+		t.Fatalf("expected redirect to login, got %q", location)
+	}
+}
+
+func TestAdminSubmissionsListsSubmissions(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "test-admin-token")
+
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	insertWebSubmission(t, ctx, conn, "https://doc.rust-lang.org/book/", "Rust")
+
+	handler := newTestHandler(conn)
+	cookie := adminLoginCookie(t, handler, "test-admin-token")
+	request := httptest.NewRequest(http.MethodGet, "/admin/submissions", nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Rust") {
+		t.Fatalf("expected Rust submission:\n%s", body)
+	}
+	if !strings.Contains(body, "/admin/submissions/1") {
+		t.Fatalf("expected submission detail link:\n%s", body)
+	}
+}
+
+func TestAdminCanProcessAndActivateSubmission(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "test-admin-token")
+
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+
+	server := adminDocsServer()
+	defer server.Close()
+	submissionID := insertWebSubmission(t, ctx, conn, server.URL+"/docs", "Rust")
+
+	handler := newTestHandler(conn)
+	cookie := adminLoginCookie(t, handler, "test-admin-token")
+	csrf := adminCSRFToken(t, handler, cookie, submissionID)
+
+	processForm := url.Values{"csrf": {csrf}}
+	processRequest := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/submissions/%d/process", submissionID), strings.NewReader(processForm.Encode()))
+	processRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	processRequest.AddCookie(cookie)
+	processResponse := httptest.NewRecorder()
+	handler.ServeHTTP(processResponse, processRequest)
+
+	if processResponse.Code != http.StatusSeeOther {
+		t.Fatalf("expected process redirect, got %d: %s", processResponse.Code, processResponse.Body.String())
+	}
+
+	var status string
+	if err := conn.QueryRowContext(ctx, "SELECT status FROM documentation_submissions WHERE id = ?", submissionID).Scan(&status); err != nil {
+		t.Fatalf("read processed status: %v", err)
+	}
+	if status != "candidates_ready" {
+		t.Fatalf("expected candidates_ready, got %q", status)
+	}
+
+	csrf = adminCSRFToken(t, handler, cookie, submissionID)
+	activateForm := url.Values{"csrf": {csrf}}
+	activateRequest := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/submissions/%d/activate", submissionID), strings.NewReader(activateForm.Encode()))
+	activateRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	activateRequest.AddCookie(cookie)
+	activateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(activateResponse, activateRequest)
+
+	if activateResponse.Code != http.StatusSeeOther {
+		t.Fatalf("expected activate redirect, got %d: %s", activateResponse.Code, activateResponse.Body.String())
+	}
+
+	var topicCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM topics WHERE slug = 'rust' AND status = 'active'").Scan(&topicCount); err != nil {
+		t.Fatalf("count rust topic: %v", err)
+	}
+	if topicCount != 1 {
+		t.Fatalf("expected active rust topic, got %d", topicCount)
+	}
+}
+
 func newTestHandler(conn *sql.DB) http.Handler {
 	app := app{
 		db:  conn,
@@ -377,6 +517,8 @@ func newTestHandler(conn *sql.DB) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/admin", app.adminHandler)
+	mux.HandleFunc("/admin/", app.adminHandler)
 	mux.HandleFunc("/submissions", app.submissionsHandler)
 	mux.HandleFunc("/topics", app.topicsHandler)
 	mux.HandleFunc("/topics/search", app.searchTopicsHandler)
@@ -417,4 +559,109 @@ func importWebTopic(t *testing.T, ctx context.Context, conn *sql.DB, slug string
 
 func webIntPtr(value int) *int {
 	return &value
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
+}
+
+func adminLoginCookie(t *testing.T, handler http.Handler, token string) *http.Cookie {
+	t.Helper()
+
+	form := url.Values{"token": {token}}
+	request := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("admin login failed: %d %s", response.Code, response.Body.String())
+	}
+	cookie := findCookie(response.Result().Cookies(), adminSessionCookie)
+	if cookie == nil {
+		t.Fatal("expected admin session cookie")
+	}
+	return cookie
+}
+
+func adminCSRFToken(t *testing.T, handler http.Handler, cookie *http.Cookie, submissionID int64) string {
+	t.Helper()
+
+	request := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/admin/submissions/%d", submissionID), nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin detail failed: %d %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	marker := `name="csrf" value="`
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("expected csrf token in admin detail:\n%s", body)
+	}
+	start += len(marker)
+	end := strings.Index(body[start:], `"`)
+	if end < 0 {
+		t.Fatalf("expected csrf token closing quote:\n%s", body)
+	}
+	return body[start : start+end]
+}
+
+func insertWebSubmission(t *testing.T, ctx context.Context, conn *sql.DB, rawURL string, topic string) int64 {
+	t.Helper()
+
+	result, err := conn.ExecContext(ctx, `
+		INSERT INTO documentation_submissions (
+			submitted_url,
+			normalized_url,
+			source_host,
+			suggested_topic,
+			status
+		)
+		VALUES (?, ?, 'example.com', ?, 'pending')
+	`, rawURL, rawURL, topic)
+	if err != nil {
+		t.Fatalf("insert web submission: %v", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read submission id: %v", err)
+	}
+	return id
+}
+
+func adminDocsServer() *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, `<!doctype html>
+<html>
+<head><title>Rust Guide</title></head>
+<body>
+<main>
+<h1>Rust Guide</h1>
+<h2>Overview</h2>
+<p>%s</p>
+<h2>Ownership</h2>
+<p>%s</p>
+</main>
+</body>
+</html>`, repeatedWebWords(80), repeatedWebWords(80))
+	})
+	return httptest.NewServer(mux)
+}
+
+func repeatedWebWords(count int) string {
+	words := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		words = append(words, "documentation")
+	}
+	return strings.Join(words, " ")
 }
