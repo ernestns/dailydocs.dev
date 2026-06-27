@@ -13,11 +13,13 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/ernestns/daily-docs/internal/db"
+	"github.com/ernestns/daily-docs/internal/pipeline"
 	"github.com/ernestns/daily-docs/internal/reading"
 	"github.com/ernestns/daily-docs/internal/seed"
 	"github.com/ernestns/daily-docs/internal/submission"
@@ -696,6 +698,28 @@ func runCommand(ctx context.Context, args []string) error {
 		}
 
 		log.Printf("validated links checked=%d healthy=%d failed=%d disabled=%d", result.Checked, result.Healthy, result.Failed, result.Disabled)
+		return nil
+	case "process-submission":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: dailydocs process-submission submission-id")
+		}
+		submissionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || submissionID < 1 {
+			return fmt.Errorf("submission-id must be a positive integer")
+		}
+
+		conn, err := db.Open(ctx, os.Getenv("DB_PATH"))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		result, err := pipeline.ProcessSubmission(ctx, conn, submissionID, pipeline.Options{})
+		if err != nil {
+			return err
+		}
+
+		log.Printf("processed submission id=%d run_id=%d discovered=%d crawled=%d eligible=%d rejected=%d failed=%d", result.SubmissionID, result.PipelineRunID, result.DiscoveredCount, result.CrawledCount, result.EligibleCount, result.RejectedCount, result.FailureCount)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
