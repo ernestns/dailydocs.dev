@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
@@ -198,11 +199,13 @@ func (a app) submissionsPageHandler(w http.ResponseWriter, r *http.Request, mess
 	}
 
 	renderTemplate(w, submissionsTemplate, struct {
-		Message     string
-		Submissions []submission.Submission
+		Message      string
+		PrefillTopic string
+		Submissions  []submission.Submission
 	}{
-		Message:     message,
-		Submissions: submissions,
+		Message:      message,
+		PrefillTopic: strings.TrimSpace(r.URL.Query().Get("topic")),
+		Submissions:  submissions,
 	})
 }
 
@@ -244,12 +247,23 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	topic := strings.TrimSpace(r.URL.Query().Get("topic"))
-	if !topicPathPattern.MatchString(topic) {
+	if topic == "" {
 		http.Error(w, "invalid topic", http.StatusBadRequest)
 		return
 	}
 
-	http.Redirect(w, r, "/"+topic, http.StatusSeeOther)
+	match, ok, err := findTopic(r.Context(), a.db, topic)
+	if err != nil {
+		log.Printf("find topic failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Redirect(w, r, "/submissions?topic="+url.QueryEscape(topic), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/"+match.Slug, http.StatusSeeOther)
 }
 
 func (a app) searchTopicsHandler(w http.ResponseWriter, r *http.Request) {
@@ -333,6 +347,30 @@ func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]t
 	return topics, nil
 }
 
+func findTopic(ctx context.Context, conn *sql.DB, value string) (topicOption, bool, error) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return topicOption{}, false, nil
+	}
+
+	var topic topicOption
+	err := conn.QueryRowContext(ctx, `
+		SELECT slug, name
+		FROM topics
+		WHERE status = 'active'
+			AND (slug = ? OR lower(name) = ?)
+		ORDER BY CASE WHEN slug = ? THEN 0 ELSE 1 END, name ASC
+		LIMIT 1
+	`, value, value, value).Scan(&topic.Slug, &topic.Name)
+	if err == nil {
+		return topic, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return topicOption{}, false, nil
+	}
+	return topicOption{}, false, fmt.Errorf("query topic: %w", err)
+}
+
 func renderTemplate(w http.ResponseWriter, tmpl *template.Template, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.Execute(w, data); err != nil {
@@ -392,6 +430,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       gap: 0.75rem;
       align-items: center;
       max-width: 32rem;
+      margin-bottom: 0.75rem;
     }
     input {
       flex: 1;
@@ -422,6 +461,11 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     a {
       color: #1f2933;
     }
+    .lookup-status {
+      margin: 0 0 1rem;
+      color: #52606d;
+      font-size: 0.95rem;
+    }
   </style>
 </head>
 <body>
@@ -429,21 +473,65 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     <section>
       <h1>DailyDocs</h1>
       <p>One documentation link per topic per day.</p>
-      <form method="get" action="/read">
-        <input name="topic" list="topics" autocomplete="off" placeholder="sqlite" aria-label="Topic">
+      <form method="get" action="/read" id="topic-form">
+        <input name="topic" id="topic-input" list="topics" autocomplete="off" placeholder="sqlite" aria-label="Topic">
         <datalist id="topics">
           {{range .Topics}}<option value="{{.Slug}}">{{.Name}}</option>{{end}}
         </datalist>
-        <button type="submit">View Reading</button>
+        <button type="submit" id="topic-button">View Reading</button>
       </form>
+      <p class="lookup-status" id="topic-status"></p>
       {{if .Topics}}
       <ul>
         {{range .Topics}}<li><a href="/{{.Slug}}">{{.Name}}</a></li>{{end}}
       </ul>
       {{end}}
-      <p><a href="/topics">All topics</a> · <a href="/submissions">Submit documentation</a></p>
+      <p><a href="/topics">All topics</a></p>
     </section>
   </main>
+  <script>
+    const input = document.getElementById("topic-input");
+    const button = document.getElementById("topic-button");
+    const status = document.getElementById("topic-status");
+    let controller = null;
+
+    function setLookupState(matches) {
+      const value = input.value.trim().toLowerCase();
+      if (!value) {
+        button.textContent = "View Reading";
+        status.textContent = "";
+        return;
+      }
+
+      const exact = matches.find((topic) => topic.slug.toLowerCase() === value || topic.name.toLowerCase() === value);
+      if (exact) {
+        button.textContent = "View Reading";
+        status.textContent = "";
+        return;
+      }
+
+      button.textContent = "Submit Documentation";
+      status.textContent = "No matching topic found.";
+    }
+
+    input.addEventListener("input", async () => {
+      const value = input.value.trim();
+      if (controller) controller.abort();
+      if (!value) {
+        setLookupState([]);
+        return;
+      }
+
+      controller = new AbortController();
+      try {
+        const response = await fetch("/topics/search?q=" + encodeURIComponent(value), { signal: controller.signal });
+        if (!response.ok) return;
+        setLookupState(await response.json());
+      } catch (error) {
+        if (error.name !== "AbortError") status.textContent = "";
+      }
+    });
+  </script>
 </body>
 </html>
 `))
@@ -499,7 +587,7 @@ var topicsTemplate = template.Must(template.New("topics").Parse(`<!doctype html>
     {{else}}
     <p>No topics yet.</p>
     {{end}}
-    <p><a href="/">Home</a> · <a href="/submissions">Submit documentation</a></p>
+    <p><a href="/">Home</a></p>
   </main>
 </body>
 </html>
@@ -606,7 +694,7 @@ var submissionsTemplate = template.Must(template.New("submissions").Parse(`<!doc
       </label>
       <label>
         Topic
-        <input name="topic" autocomplete="off" placeholder="SQLite">
+        <input name="topic" autocomplete="off" placeholder="SQLite" value="{{.PrefillTopic}}">
       </label>
       <label class="honeypot">
         Website

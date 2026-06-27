@@ -31,10 +31,18 @@ func TestHomePageListsTopics(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `value="sqlite"`) {
 		t.Fatalf("expected sqlite topic option in home page:\n%s", response.Body.String())
 	}
+	if strings.Contains(response.Body.String(), `>Submit documentation</a>`) {
+		t.Fatalf("did not expect static submit documentation link on home page:\n%s", response.Body.String())
+	}
 }
 
 func TestGenerateReadingRedirectsToTopicURL(t *testing.T) {
-	handler := newTestHandler(nil)
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	importWebTopic(t, ctx, conn, "sqlite", "SQLite")
+
+	handler := newTestHandler(conn)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/read?topic=sqlite", nil))
 
@@ -43,6 +51,41 @@ func TestGenerateReadingRedirectsToTopicURL(t *testing.T) {
 	}
 	if location := response.Header().Get("Location"); location != "/sqlite" {
 		t.Fatalf("expected redirect to /sqlite, got %q", location)
+	}
+}
+
+func TestGenerateReadingRedirectsTopicNameToTopicURL(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	importWebTopic(t, ctx, conn, "sqlite", "SQLite")
+
+	handler := newTestHandler(conn)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/read?topic=SQLite", nil))
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", response.Code)
+	}
+	if location := response.Header().Get("Location"); location != "/sqlite" {
+		t.Fatalf("expected redirect to /sqlite, got %q", location)
+	}
+}
+
+func TestGenerateReadingRedirectsMissingTopicToSubmission(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+
+	handler := newTestHandler(conn)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/read?topic=Rust", nil))
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", response.Code)
+	}
+	if location := response.Header().Get("Location"); location != "/submissions?topic=Rust" {
+		t.Fatalf("expected redirect to /submissions?topic=Rust, got %q", location)
 	}
 }
 
@@ -173,6 +216,23 @@ func TestSubmissionsPageIsNoindexed(t *testing.T) {
 	}
 	if !strings.Contains(body, "Documentation URL") {
 		t.Fatalf("expected submission form:\n%s", body)
+	}
+}
+
+func TestSubmissionsPagePrefillsTopic(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+
+	handler := newTestHandler(conn)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/submissions?topic=Rust", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), `value="Rust"`) {
+		t.Fatalf("expected prefilled topic:\n%s", response.Body.String())
 	}
 }
 
