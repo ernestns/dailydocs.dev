@@ -22,6 +22,7 @@ The script defaults to:
 domain: dailydocs.dev
 app user: dailydocs
 app dir: /opt/dailydocs
+database: /opt/dailydocs/data/dailydocs.sqlite
 app address: 127.0.0.1:8080
 service: dailydocs.service
 ```
@@ -49,7 +50,7 @@ bin/dailydocs
 ## Run Locally
 
 ```sh
-ADDR=:8080 ./bin/dailydocs
+ADDR=:8080 DB_PATH=data/dailydocs.sqlite ./bin/dailydocs
 ```
 
 Smoke checks:

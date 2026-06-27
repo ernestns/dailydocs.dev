@@ -6,6 +6,8 @@ BINARY_NAME="${BINARY_NAME:-dailydocs}"
 APP_USER="${APP_USER:-dailydocs}"
 APP_GROUP="${APP_GROUP:-dailydocs}"
 APP_DIR="${APP_DIR:-/opt/dailydocs}"
+DATA_DIR="${DATA_DIR:-$APP_DIR/data}"
+DB_PATH="${DB_PATH:-$DATA_DIR/dailydocs.sqlite}"
 APP_ADDR="${APP_ADDR:-127.0.0.1:8080}"
 DOMAIN="${DOMAIN:-dailydocs.dev}"
 
@@ -35,7 +37,8 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
 fi
 
 echo "==> Preparing application directory"
-mkdir -p "$APP_DIR/bin"
+mkdir -p "$APP_DIR/bin" "$DATA_DIR"
+chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR"
 
 echo "==> Building application"
 "$REPO_DIR/scripts/build.sh"
@@ -53,6 +56,7 @@ User=$APP_USER
 Group=$APP_GROUP
 WorkingDirectory=$APP_DIR
 Environment=ADDR=$APP_ADDR
+Environment=DB_PATH=$DB_PATH
 ExecStart=$APP_DIR/bin/$BINARY_NAME
 Restart=on-failure
 RestartSec=5

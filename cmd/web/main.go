@@ -9,13 +9,25 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/ernestns/daily-docs/internal/db"
 )
 
 func main() {
+	ctx := context.Background()
+
 	addr := os.Getenv("ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
+
+	dbPath := os.Getenv("DB_PATH")
+	conn, err := db.Open(ctx, dbPath)
+	if err != nil {
+		log.Printf("database startup failed: %v", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
@@ -107,7 +119,7 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
   <main>
     <section>
       <h1>DailyDocs</h1>
-      <p>One carefully curated documentation page per topic per day.</p>
+      <p>One documentation link per topic per day.</p>
     </section>
   </main>
 </body>
