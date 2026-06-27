@@ -178,7 +178,9 @@ Autocomplete is supported.
 
 Users search existing topics.
 
-If a topic does not exist, offer `Import Topic`.
+If a topic does not exist, offer documentation URL submission.
+
+For future topic creation, the lower-friction action is documentation link submission rather than topic submission. A user can submit a documentation base URL, optionally provide a topic name, and the system can infer or propose the topic during processing.
 
 ### View Reading
 
@@ -198,7 +200,7 @@ Display:
 
 ## Import System
 
-The importer is a separate executable.
+The importer is a separate command mode in the DailyDocs binary.
 
 Purpose: turn a topic into a reading list.
 
@@ -218,9 +220,152 @@ Import "SQLite"
 
 Initially, imports are manually started.
 
+## Documentation Link Submission
+
+Future topic expansion should start from submitted documentation links.
+
+If a user searches for a topic that does not exist, offer a way to submit a documentation URL. The topic name is optional at submission time.
+
+Example submission:
+
+```text
+url: https://sqlite.org/docs.html
+topic: SQLite
+```
+
+The submitted URL is enqueued for processing. It does not immediately create an active topic.
+
+Submission status values:
+
+- pending
+- processing
+- candidates_ready
+- active
+- rejected
+- failed
+
+Public submission pages should show status, source host, suggested topic, request count, and last submission time. They should not expose internal errors, raw crawl output, rejected candidate URLs, or score components. Public queue pages should include `noindex`.
+
+Submission safety:
+
+- accept only `http` and `https`
+- normalize and deduplicate URLs before insert
+- hash submitter IPs for rate limiting
+- include basic bot friction such as a honeypot field
+- make submitted URLs non-clickable until processed
+- keep admin/debug details out of the public queue
+
+Processing:
+
+```text
+submitted documentation URL
+  -> infer or confirm topic
+  -> discover candidate documentation pages
+  -> crawl pages
+  -> extract structured metadata
+  -> classify with deterministic heuristics
+  -> score with explainable rules
+  -> filter low-scoring pages
+  -> deduplicate URLs and canonicals
+  -> persist eligible candidates
+```
+
+The initial pipeline does not use AI. It should be deterministic and idempotent so the same documentation homepage can be processed repeatedly without duplicating candidates.
+
+AI review may be added later as an optional classification or scoring layer.
+
+Candidate pages should be persisted before activation. A separate activation step can promote eligible candidates into active `pages`.
+
+Initial deterministic stages:
+
+1. Discover candidate URLs from sitemap.xml, robots.txt sitemap declarations, navigation menus, sidebars, breadcrumbs, and internal documentation links.
+2. Normalize, scope-check, and deduplicate the crawl frontier before fetching.
+3. Crawl candidate URLs and keep URL, HTML, HTTP status, and headers in memory for extraction.
+4. Extract title, H1, headings, plain text, word count, links, canonical URL, and meta description.
+5. Classify pages using deterministic heuristics.
+6. Apply hard exclusions before scoring.
+7. Score remaining pages with explainable score components.
+8. Filter pages below the minimum score.
+9. Deduplicate redirects, normalized URLs, and trusted canonical URLs.
+10. Persist eligible candidates.
+
+Default crawl policy:
+
+- same host only
+- submitted path prefix by default
+- strip fragments
+- drop query strings unless allowlisted
+- max pages: 250
+- max depth: 3
+- max bytes per page: 2 MB
+- request timeout: 10 seconds
+- concurrency: 1 per host
+- respect robots.txt disallow rules
+- extract sitemap declarations from robots.txt
+
+Canonical URLs are trusted only when they stay inside the allowed host and path scope. Otherwise, the final fetched URL remains the candidate identity.
+
+Hard exclusions:
+
+- non-HTML responses
+- login-required pages
+- release notes
+- archive pages
+- changelogs
+- download pages
+- search pages
+- tag/category index pages
+
+Possible classifications:
+
+- Tutorial
+- Guide
+- Concept
+- Reference
+- API
+- Example
+- Migration
+- Release Notes
+- FAQ
+- Archive
+- Other
+
+Example scoring:
+
+- `+50` official documentation
+- `+20` tutorial, guide, or concept
+- `+15` between 500 and 3000 words
+- `+10` meaningful headings
+- `-40` release notes
+- `-40` migration guide
+- `-30` archive
+- `-20` generated API reference
+- `-10` very short page
+
+Example threshold:
+
+- `score >= 70`: eligible candidate
+
+Users should be able to see pending submissions so they know a documentation source has been enqueued. A public queue page can list submitted/pending sources and their processing status.
+
+Possible future feedback on the queue:
+
+- upvote a pending submission
+- flag duplicates
+- suggest topic name edits
+- suggest better source URLs
+
+Possible future feedback on active readings:
+
+- good link
+- wrong topic
+- not documentation
+- broken link
+- duplicate
+
 ## Link Validation
 
-The validator is a separate executable.
+The validator is a separate command mode in the DailyDocs binary.
 
 Responsibilities:
 
@@ -254,13 +399,17 @@ Single monolith.
 
 ### Importer
 
-Separate Go executable.
+Separate Go command mode.
 
 Responsibilities:
 
-- topic discovery
+- documentation link processing
+- topic inference
+- candidate discovery
 - scraping
 - parsing
+- deterministic classification
+- explainable scoring
 - metadata generation
 - deduplication
 - reading order generation
@@ -269,7 +418,7 @@ Runs manually.
 
 ### Validator
 
-Separate Go executable.
+Separate Go command mode.
 
 Responsibilities:
 
@@ -294,6 +443,8 @@ Runs manually, scheduled later if desired.
 
 - id
 - topic_id
+- page_candidate_id
+- activated_from_pipeline_run_id
 - title
 - url
 - source
@@ -303,9 +454,12 @@ Runs manually, scheduled later if desired.
 - evergreen_score
 - reading_order
 - active
+- activation_reason
 - last_verified
 - created_at
 - updated_at
+
+Pages referenced by `daily_readings` must not be deleted. Removal from the reading pool means `active = 0`.
 
 ### daily_readings
 
@@ -331,11 +485,118 @@ Unique constraint:
 - pages_imported
 - error
 
+The `imports` table is for seed-file imports only. Pipeline processing history belongs in `documentation_submissions`, `pipeline_runs`, and `page_candidates`.
+
+### documentation_submissions
+
+- id
+- submitted_url
+- normalized_url
+- source_host
+- inferred_topic
+- suggested_topic
+- status
+- visibility
+- allowed_hosts
+- allowed_path_prefixes
+- locked_at
+- locked_until
+- locked_by
+- latest_pipeline_run_id
+- request_count
+- attempt_count
+- last_attempt_at
+- submitter_ip_hash
+- rejection_reason
+- last_error
+- first_submitted_at
+- last_submitted_at
+- error
+
+Unique constraint:
+
+- normalized_url
+
+### pipeline_runs
+
+- id
+- documentation_submission_id
+- status
+- crawl_policy
+- started_at
+- completed_at
+- discovered_count
+- crawled_count
+- eligible_count
+- rejected_count
+- failure_count
+- error
+
+`documentation_submissions.status` is the public lifecycle. `pipeline_runs.status` is the processing attempt lifecycle.
+
+Submission statuses:
+
+- pending
+- processing
+- candidates_ready
+- active
+- rejected
+- failed
+
+Pipeline run statuses:
+
+- running
+- completed
+- failed
+- canceled
+
+The first implementation does not persist discovered URL rows or raw HTML rows. Discovery, crawl, and extraction artifacts stay in memory during a run. `pipeline_runs` stores aggregate counts and bounded error summaries; `page_candidates` stores the eligible output.
+
+### page_candidates
+
+- id
+- documentation_submission_id
+- pipeline_run_id
+- proposed_topic_slug
+- proposed_topic_name
+- topic_id
+- title
+- h1
+- url
+- normalized_url
+- canonical_url
+- source
+- http_status
+- extracted_excerpt
+- word_count
+- headings
+- primary_classification
+- classification_tags
+- classification_rules_version
+- score
+- score_components
+- official
+- estimated_minutes
+- reason
+- reject_reason
+- status
+- created_at
+- reviewed_at
+
+`headings`, `classification_tags`, and `score_components` are JSON stored as text in SQLite until querying them requires a different shape.
+
+Unique constraints:
+
+- documentation_submission_id, normalized_url
+- documentation_submission_id, canonical_url when canonical_url is present
+
+Activation history can be added later if moderation needs it. For MVP, provenance fields on `pages` are enough.
+
 ## Deployment Philosophy
 
 Infrastructure should fit on a single VPS.
 
-Single Hetzner VPS, SQLite database, one Go web application, one importer executable, and one validator executable.
+Single Hetzner VPS, SQLite database, and one Go binary with web, import, validation, and processing command modes.
 
 The repository is the source of truth.
 
@@ -355,15 +616,15 @@ Application startup automatically performs database migrations.
 
 SQLite operates in WAL mode.
 
-Nightly backups use SQLite's backup mechanism.
+Manual backups use SQLite's backup mechanism.
 
-Backups are:
+Scheduled offsite backups are a backlog item. When added, backups should be:
 
 - compressed
 - uploaded to object storage
 - retained daily, weekly, and monthly
 
-Recovery should be a documented, tested process.
+Recovery should be documented and tested before scheduled processing becomes important.
 
 ## Future Features
 
@@ -372,7 +633,8 @@ Recovery should be a documented, tested process.
 - Reading history
 - Read status
 - Comments
-- Community contributions
+- Documentation source discovery
+- User feedback on pending submissions and active readings
 - Moderation
 - Optional AI summaries, quizzes, difficulty estimation, or tagging
 
