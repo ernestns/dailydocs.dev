@@ -21,6 +21,7 @@ import (
 
 	"github.com/ernestns/daily-docs/internal/activation"
 	"github.com/ernestns/daily-docs/internal/db"
+	"github.com/ernestns/daily-docs/internal/inspect"
 	"github.com/ernestns/daily-docs/internal/pipeline"
 	"github.com/ernestns/daily-docs/internal/queue"
 	"github.com/ernestns/daily-docs/internal/reading"
@@ -1076,7 +1077,75 @@ func runCommand(ctx context.Context, args []string) error {
 
 		log.Printf("processed pending submissions claimed=%d processed=%d failed=%d", result.Claimed, result.Processed, result.Failed)
 		return nil
+	case "list-submissions":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: dailydocs list-submissions")
+		}
+
+		conn, err := db.Open(ctx, os.Getenv("DB_PATH"))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		return inspect.WriteSubmissions(ctx, conn, os.Stdout)
+	case "show-submission":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: dailydocs show-submission submission-id")
+		}
+		submissionID, err := parsePositiveID(args[1], "submission-id")
+		if err != nil {
+			return err
+		}
+
+		conn, err := db.Open(ctx, os.Getenv("DB_PATH"))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		return inspect.WriteSubmission(ctx, conn, os.Stdout, submissionID)
+	case "list-runs":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: dailydocs list-runs submission-id")
+		}
+		submissionID, err := parsePositiveID(args[1], "submission-id")
+		if err != nil {
+			return err
+		}
+
+		conn, err := db.Open(ctx, os.Getenv("DB_PATH"))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		return inspect.WriteRuns(ctx, conn, os.Stdout, submissionID)
+	case "list-candidates":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: dailydocs list-candidates submission-id")
+		}
+		submissionID, err := parsePositiveID(args[1], "submission-id")
+		if err != nil {
+			return err
+		}
+
+		conn, err := db.Open(ctx, os.Getenv("DB_PATH"))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		return inspect.WriteCandidates(ctx, conn, os.Stdout, submissionID)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func parsePositiveID(value string, name string) (int64, error) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id < 1 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return id, nil
 }
