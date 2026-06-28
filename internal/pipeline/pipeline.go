@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -438,6 +439,9 @@ func discoverURLs(ctx context.Context, client *http.Client, sub sourceSubmission
 	add := func(raw string, depth int) (discoveryItem, bool) {
 		normalized, _, err := submission.NormalizeURL(raw)
 		if err != nil {
+			return discoveryItem{}, false
+		}
+		if !isDiscoverableDocumentURL(normalized) {
 			return discoveryItem{}, false
 		}
 		if !inScope(sub.NormalizedURL, normalized) {
@@ -1842,6 +1846,9 @@ type sitemap struct {
 	URLs []struct {
 		Loc string `xml:"loc"`
 	} `xml:"url"`
+	Sitemaps []struct {
+		Loc string `xml:"loc"`
+	} `xml:"sitemap"`
 }
 
 func sitemapURLs(ctx context.Context, client *http.Client, raw string) []string {
@@ -1876,6 +1883,22 @@ func sitemapURLs(ctx context.Context, client *http.Client, raw string) []string 
 }
 
 func fetchSitemap(ctx context.Context, client *http.Client, rawURL string, maxBytes int64) []string {
+	return fetchSitemapDepth(ctx, client, rawURL, maxBytes, 0, map[string]struct{}{})
+}
+
+func fetchSitemapDepth(ctx context.Context, client *http.Client, rawURL string, maxBytes int64, depth int, seen map[string]struct{}) []string {
+	if depth > 2 {
+		return nil
+	}
+	normalized, _, err := submission.NormalizeURL(rawURL)
+	if err != nil {
+		normalized = rawURL
+	}
+	if _, exists := seen[normalized]; exists {
+		return nil
+	}
+	seen[normalized] = struct{}{}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil
@@ -1894,13 +1917,47 @@ func fetchSitemap(ctx context.Context, client *http.Client, rawURL string, maxBy
 	}
 	var parsed sitemap
 	if err := xml.Unmarshal(body, &parsed); err != nil {
-		return nil
+		return sitemapTextURLs(string(body))
 	}
 	locs := make([]string, 0, len(parsed.URLs))
 	for _, entry := range parsed.URLs {
 		locs = append(locs, strings.TrimSpace(entry.Loc))
 	}
+	for _, entry := range parsed.Sitemaps {
+		child := strings.TrimSpace(entry.Loc)
+		if child == "" {
+			continue
+		}
+		locs = append(locs, fetchSitemapDepth(ctx, client, child, maxBytes, depth+1, seen)...)
+	}
 	return locs
+}
+
+func sitemapTextURLs(body string) []string {
+	urls := []string{}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
+			urls = append(urls, line)
+		}
+	}
+	return urls
+}
+
+func isDiscoverableDocumentURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	switch strings.ToLower(path.Ext(parsed.Path)) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".css", ".js", ".mjs", ".map", ".pdf", ".zip", ".tar", ".gz", ".tgz", ".mp4", ".webm", ".mp3", ".woff", ".woff2", ".ttf", ".eot":
+		return false
+	default:
+		return true
+	}
 }
 
 func inScope(baseRaw string, candidateRaw string) bool {
@@ -1915,7 +1972,7 @@ func inScope(baseRaw string, candidateRaw string) bool {
 	if !strings.EqualFold(base.Host, candidate.Host) {
 		return false
 	}
-	prefix := base.Path
+	prefix := scopePath(base.Path)
 	if prefix == "" || prefix == "/" {
 		return true
 	}
@@ -1923,6 +1980,23 @@ func inScope(baseRaw string, candidateRaw string) bool {
 		prefix += "/"
 	}
 	return candidate.Path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(candidate.Path, prefix)
+}
+
+func scopePath(rawPath string) string {
+	if rawPath == "" || rawPath == "/" {
+		return rawPath
+	}
+	if strings.HasSuffix(rawPath, "/") {
+		return rawPath
+	}
+	if path.Ext(rawPath) != "" {
+		dir := path.Dir(rawPath)
+		if dir == "." {
+			return "/"
+		}
+		return dir
+	}
+	return rawPath
 }
 
 func firstMatch(pattern *regexp.Regexp, value string) string {

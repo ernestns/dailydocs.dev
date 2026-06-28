@@ -441,6 +441,117 @@ func TestDiscoverURLReturnsScopedCandidateURLs(t *testing.T) {
 	}
 }
 
+func TestDiscoverURLScopesFileSourceToParentDirectory(t *testing.T) {
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/docs.html", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "Docs Index", "Docs Index", []string{
+			`<a href="/wal.html">WAL</a>`,
+			`<a href="/queryplanner.html">Query Planner</a>`,
+			`<a href="/news.html">News</a>`,
+		})
+	})
+	mux.HandleFunc("/wal.html", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "WAL", "WAL", nil)
+	})
+	mux.HandleFunc("/queryplanner.html", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "Query Planner", "Query Planner", nil)
+	})
+	mux.HandleFunc("/news.html", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "News", "News", nil)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	result, err := DiscoverURL(ctx, server.URL+"/docs.html", Options{Client: server.Client(), MaxPages: 10})
+	if err != nil {
+		t.Fatalf("discover url: %v", err)
+	}
+	for _, expected := range []string{server.URL + "/docs.html", server.URL + "/wal.html", server.URL + "/queryplanner.html"} {
+		if !containsString(result.URLs, expected) {
+			t.Fatalf("expected discovered URL %q, got %v", expected, result.URLs)
+		}
+	}
+}
+
+func TestDiscoverURLSkipsAssetLinks(t *testing.T) {
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/docs/", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "Docs Home", "Docs Home", []string{
+			`<a href="/docs/guide.html">Guide</a>`,
+			`<a href="/docs/gopher.jpg">Gopher</a>`,
+			`<a href="/docs/app.js">Script</a>`,
+		})
+	})
+	mux.HandleFunc("/docs/guide.html", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "Guide", "Guide", nil)
+	})
+	mux.HandleFunc("/docs/gopher.jpg", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("jpg"))
+	})
+	mux.HandleFunc("/docs/app.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = w.Write([]byte("js"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	result, err := DiscoverURL(ctx, server.URL+"/docs/", Options{Client: server.Client(), MaxPages: 10})
+	if err != nil {
+		t.Fatalf("discover url: %v", err)
+	}
+	if containsString(result.URLs, server.URL+"/docs/gopher.jpg") || containsString(result.URLs, server.URL+"/docs/app.js") {
+		t.Fatalf("did not expect asset URLs, got %v", result.URLs)
+	}
+	if !containsString(result.URLs, server.URL+"/docs/guide.html") {
+		t.Fatalf("expected guide URL, got %v", result.URLs)
+	}
+}
+
+func TestDiscoverURLFollowsSitemapIndex(t *testing.T) {
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/docs/concepts/", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "Concepts", "Concepts", nil)
+	})
+	mux.HandleFunc("/docs/concepts/workloads/", func(w http.ResponseWriter, r *http.Request) {
+		writeDoc(w, "Workloads", "Workloads", nil)
+	})
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<sitemap><loc>%s/docs-sitemap.xml</loc></sitemap>
+</sitemapindex>`, serverHost(r))
+	})
+	mux.HandleFunc("/docs-sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>%s/docs/concepts/workloads/</loc></url>
+	<url><loc>%s/blog/out-of-scope/</loc></url>
+</urlset>`, serverHost(r), serverHost(r))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	result, err := DiscoverURL(ctx, server.URL+"/docs/concepts/", Options{Client: server.Client(), MaxPages: 10})
+	if err != nil {
+		t.Fatalf("discover url: %v", err)
+	}
+	if !containsString(result.URLs, server.URL+"/docs/concepts/workloads") {
+		t.Fatalf("expected sitemap child URL, got %v", result.URLs)
+	}
+	if containsString(result.URLs, server.URL+"/blog/out-of-scope") {
+		t.Fatalf("did not expect out-of-scope sitemap URL, got %v", result.URLs)
+	}
+}
+
 func TestDiscoverURLFollowsEmbeddedNavigationFrame(t *testing.T) {
 	ctx := context.Background()
 
@@ -759,6 +870,10 @@ func docsServer() *httptest.Server {
 		writeDoc(w, "Out of Scope", "Out of Scope", nil)
 	})
 	return httptest.NewServer(mux)
+}
+
+func serverHost(r *http.Request) string {
+	return "http://" + r.Host
 }
 
 func writeDoc(w http.ResponseWriter, title string, h1 string, links []string) {
