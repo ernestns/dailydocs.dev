@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DailyDocs</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1f2933;
+      background: #f7f8fa;
+    }
+    main {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 2rem;
+      box-sizing: border-box;
+    }
+    section {
+      width: min(42rem, 100%);
+    }
+    h1 {
+      margin: 0 0 0.75rem;
+      font-size: clamp(2.5rem, 8vw, 5rem);
+      line-height: 1;
+    }
+    p {
+      margin: 0 0 1.5rem;
+      max-width: 34rem;
+      color: #52606d;
+      font-size: 1.125rem;
+      line-height: 1.6;
+    }
+    form {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      max-width: 32rem;
+      margin-bottom: 0.75rem;
+    }
+    .topic-lookup {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      min-width: 0;
+      padding: 0.75rem 0.875rem;
+      border: 1px solid #cbd2d9;
+      border-radius: 6px;
+      font: inherit;
+      background: #ffffff;
+    }
+    button {
+      padding: 0.75rem 1rem;
+      border: 0;
+      border-radius: 6px;
+      font: inherit;
+      color: #ffffff;
+      background: #1f2933;
+      cursor: pointer;
+    }
+    ul {
+      margin: 1.25rem 0 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    a {
+      color: #1f2933;
+    }
+    .lookup-status {
+      margin: 0 0 1rem;
+      color: #52606d;
+      font-size: 0.95rem;
+    }
+    .topic-results {
+      position: absolute;
+      z-index: 2;
+      top: calc(100% + 0.25rem);
+      right: 0;
+      left: 0;
+      display: grid;
+      gap: 0;
+      margin: 0;
+      padding: 0.25rem;
+      list-style: none;
+      border: 1px solid #cbd2d9;
+      border-radius: 6px;
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(31, 41, 51, 0.12);
+    }
+    .topic-results[hidden] {
+      display: none;
+    }
+    .topic-option {
+      padding: 0.65rem 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .topic-option[aria-selected="true"] {
+      color: #ffffff;
+      background: #1f2933;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>DailyDocs</h1>
+      <p>One documentation link per topic per day.</p>
+      <form method="get" action="/read" id="topic-form">
+        <div class="topic-lookup">
+          <input
+            name="topic"
+            id="topic-input"
+            autocomplete="off"
+            placeholder="sqlite"
+            aria-label="Topic"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="false"
+            aria-controls="topic-results"
+          >
+          <ul class="topic-results" id="topic-results" role="listbox" hidden></ul>
+        </div>
+        <button type="submit" id="topic-button">View Reading</button>
+      </form>
+      <p class="lookup-status" id="topic-status"></p>
+      {{if .Topics}}
+      <ul>
+        {{range .Topics}}<li><a href="/{{.Slug}}">{{.Name}}</a></li>{{end}}
+      </ul>
+      {{end}}
+      <p><a href="/topics">All topics</a></p>
+    </section>
+  </main>
+  <script>
+    const input = document.getElementById("topic-input");
+    const button = document.getElementById("topic-button");
+    const status = document.getElementById("topic-status");
+    const results = document.getElementById("topic-results");
+    let controller = null;
+    let matches = [];
+    let activeIndex = -1;
+
+    function exactMatch() {
+      const value = input.value.trim().toLowerCase();
+      return matches.find((topic) => topic.slug.toLowerCase() === value || topic.name.toLowerCase() === value);
+    }
+
+    function closeResults() {
+      results.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+      activeIndex = -1;
+      updateActiveOption();
+    }
+
+    function openResults() {
+      if (matches.length === 0) return;
+      results.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+    }
+
+    function updateActiveOption() {
+      Array.from(results.children).forEach((option, index) => {
+        const selected = index === activeIndex;
+        option.setAttribute("aria-selected", selected ? "true" : "false");
+        if (selected) {
+          input.setAttribute("aria-activedescendant", option.id);
+        }
+      });
+      if (activeIndex < 0) {
+        input.removeAttribute("aria-activedescendant");
+      }
+    }
+
+    function selectMatch(index) {
+      const topic = matches[index];
+      if (!topic) return;
+      input.value = topic.name;
+      matches = [topic];
+      closeResults();
+      setLookupState();
+    }
+
+    function renderResults() {
+      results.innerHTML = "";
+      matches.forEach((topic, index) => {
+        const option = document.createElement("li");
+        option.id = "topic-option-" + index;
+        option.className = "topic-option";
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", "false");
+        option.textContent = topic.name;
+        option.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          selectMatch(index);
+        });
+        results.appendChild(option);
+      });
+      activeIndex = -1;
+      updateActiveOption();
+      if (matches.length > 0) openResults();
+      else closeResults();
+    }
+
+    function setLookupState() {
+      const value = input.value.trim().toLowerCase();
+      if (!value) {
+        button.textContent = "View Reading";
+        status.textContent = "";
+        return;
+      }
+
+      if (exactMatch()) {
+        button.textContent = "View Reading";
+        status.textContent = "";
+        return;
+      }
+
+      button.textContent = "Submit Documentation";
+      status.textContent = matches.length > 0 ? "Select a topic from the list." : "No matching topic found.";
+    }
+
+    input.addEventListener("input", async () => {
+      const value = input.value.trim();
+      if (controller) controller.abort();
+      if (!value) {
+        matches = [];
+        renderResults();
+        setLookupState();
+        return;
+      }
+
+      controller = new AbortController();
+      try {
+        const response = await fetch("/topics/search?q=" + encodeURIComponent(value), { signal: controller.signal });
+        if (!response.ok) return;
+        matches = await response.json();
+        renderResults();
+        setLookupState();
+      } catch (error) {
+        if (error.name !== "AbortError") status.textContent = "";
+      }
+    });
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (results.hidden) openResults();
+        activeIndex = Math.min(activeIndex + 1, matches.length - 1);
+        updateActiveOption();
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        activeIndex = Math.max(activeIndex - 1, 0);
+        updateActiveOption();
+      } else if (event.key === "Enter" && activeIndex >= 0 && !results.hidden) {
+        event.preventDefault();
+        selectMatch(activeIndex);
+      } else if (event.key === "Escape") {
+        closeResults();
+      }
+    });
+
+    input.addEventListener("blur", () => {
+      window.setTimeout(closeResults, 100);
+    });
+  </script>
+</body>
+</html>
