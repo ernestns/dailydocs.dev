@@ -457,8 +457,11 @@ func TestSubmissionsPageShowsSafePublicFields(t *testing.T) {
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
 
+	server := adminDocsServer()
+	defer server.Close()
+
 	form := url.Values{}
-	form.Set("url", "https://go.dev/doc/")
+	form.Set("url", server.URL+"/docs")
 	form.Set("topic", "Go")
 
 	handler := newTestHandler(conn)
@@ -473,13 +476,17 @@ func TestSubmissionsPageShowsSafePublicFields(t *testing.T) {
 		t.Fatalf("expected 200, got %d", response.Code)
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, "go.dev") {
+	serverHost := strings.TrimPrefix(server.URL, "http://")
+	if !strings.Contains(body, serverHost) {
 		t.Fatalf("expected source host in queue:\n%s", body)
 	}
 	if !strings.Contains(body, "Go") {
 		t.Fatalf("expected suggested topic in queue:\n%s", body)
 	}
-	if strings.Contains(body, "https://go.dev/doc") {
+	if !strings.Contains(body, "Discovered") {
+		t.Fatalf("expected public status label in queue:\n%s", body)
+	}
+	if strings.Contains(body, server.URL+"/docs") {
 		t.Fatalf("did not expect raw submitted URL in public queue:\n%s", body)
 	}
 }

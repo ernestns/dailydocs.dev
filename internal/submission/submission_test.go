@@ -145,6 +145,45 @@ func TestListPublicExcludesHiddenSubmissions(t *testing.T) {
 	}
 }
 
+func TestPublicStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		sub  Submission
+		want string
+	}{
+		{
+			name: "pending submission",
+			sub:  Submission{Status: "pending"},
+			want: "Submitted",
+		},
+		{
+			name: "ready source",
+			sub:  Submission{Status: "active", SourceStatus: "ready_to_process"},
+			want: "Discovered",
+		},
+		{
+			name: "needs scope",
+			sub:  Submission{Status: "active", SourceStatus: "needs_scope"},
+			want: "Needs narrower URL",
+		},
+		{
+			name: "candidates ready",
+			sub:  Submission{Status: "active", SourceStatus: "candidates_ready"},
+			want: "Ready for review",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.sub.PublicStatus(); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
 func openSubmissionTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 

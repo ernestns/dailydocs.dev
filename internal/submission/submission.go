@@ -29,6 +29,8 @@ type Submission struct {
 	SourceHost      string
 	SuggestedTopic  string
 	Status          string
+	SourceStatus    string
+	DiscoveryCount  int
 	Visibility      string
 	RequestCount    int
 	SubmitterIPHash string
@@ -104,6 +106,20 @@ func ListPublic(ctx context.Context, conn *sql.DB, limit int) ([]Submission, err
 			source_host,
 			suggested_topic,
 			status,
+			COALESCE((
+				SELECT ts.status
+				FROM topic_sources ts
+				WHERE ts.created_from_submission_id = documentation_submissions.id
+				ORDER BY ts.id DESC
+				LIMIT 1
+			), ''),
+			COALESCE((
+				SELECT ts.discovery_count
+				FROM topic_sources ts
+				WHERE ts.created_from_submission_id = documentation_submissions.id
+				ORDER BY ts.id DESC
+				LIMIT 1
+			), 0),
 			visibility,
 			request_count,
 			submitter_ip_hash,
@@ -203,6 +219,8 @@ func getByNormalizedURL(ctx context.Context, tx *sql.Tx, normalizedURL string) (
 			source_host,
 			suggested_topic,
 			status,
+			'' AS source_status,
+			0 AS discovery_count,
 			visibility,
 			request_count,
 			submitter_ip_hash,
@@ -220,6 +238,42 @@ func getByNormalizedURL(ctx context.Context, tx *sql.Tx, normalizedURL string) (
 	return sub, nil
 }
 
+func (s Submission) PublicStatus() string {
+	switch s.SourceStatus {
+	case "pending_discovery":
+		return "Queued for discovery"
+	case "ready_to_process":
+		return "Discovered"
+	case "processing":
+		return "Processing"
+	case "candidates_ready":
+		return "Ready for review"
+	case "needs_scope":
+		return "Needs narrower URL"
+	case "discovery_failed":
+		return "Discovery failed"
+	case "disabled":
+		return "Disabled"
+	}
+
+	switch s.Status {
+	case "pending":
+		return "Submitted"
+	case "processing":
+		return "Processing"
+	case "candidates_ready":
+		return "Ready for review"
+	case "active":
+		return "Active"
+	case "rejected":
+		return "Rejected"
+	case "failed":
+		return "Failed"
+	default:
+		return s.Status
+	}
+}
+
 type submissionScanner interface {
 	Scan(dest ...any) error
 }
@@ -233,6 +287,8 @@ func scanSubmission(scanner submissionScanner) (Submission, error) {
 		&sub.SourceHost,
 		&sub.SuggestedTopic,
 		&sub.Status,
+		&sub.SourceStatus,
+		&sub.DiscoveryCount,
 		&sub.Visibility,
 		&sub.RequestCount,
 		&sub.SubmitterIPHash,
