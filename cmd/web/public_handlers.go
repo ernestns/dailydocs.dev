@@ -166,8 +166,19 @@ func (a app) maybeCreateSourceAndDiscover(ctx context.Context, sub submission.Su
 		return
 	}
 	if !ok {
+		source, err := topicsource.CreateFromSubmission(ctx, a.db, topicsource.CreateFromSubmissionInput{
+			SubmissionID: sub.ID,
+			TopicSlug:    sub.SuggestedTopic,
+			TopicName:    sub.SuggestedTopic,
+		})
+		if err != nil {
+			log.Printf("auto source create for new topic failed submission_id=%d topic=%s error=%v", sub.ID, sub.SuggestedTopic, err)
+			return
+		}
+		a.autoDiscoverSource(ctx, sub.ID, source.ID)
 		return
 	}
+
 	topicID, err := topicIDBySlug(ctx, a.db, topic.Slug)
 	if err != nil {
 		log.Printf("auto source topic id lookup failed submission_id=%d topic=%s error=%v", sub.ID, topic.Slug, err)
@@ -182,10 +193,14 @@ func (a app) maybeCreateSourceAndDiscover(ctx context.Context, sub submission.Su
 		log.Printf("auto source create failed submission_id=%d topic=%s error=%v", sub.ID, topic.Slug, err)
 		return
 	}
+	a.autoDiscoverSource(ctx, sub.ID, source.ID)
+}
+
+func (a app) autoDiscoverSource(ctx context.Context, submissionID int64, sourceID int64) {
 	discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := a.discoverSourcePreview(discoverCtx, source.ID); err != nil {
-		log.Printf("auto source discovery failed submission_id=%d source_id=%d error=%v", sub.ID, source.ID, err)
+	if _, err := a.discoverSourcePreview(discoverCtx, sourceID); err != nil {
+		log.Printf("auto source discovery failed submission_id=%d source_id=%d error=%v", submissionID, sourceID, err)
 	}
 }
 
