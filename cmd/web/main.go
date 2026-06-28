@@ -413,6 +413,7 @@ type adminSubmissionRow struct {
 type adminSubmissionDetail struct {
 	ID             int64
 	SuggestedTopic string
+	SuggestedSlug  string
 	SourceHost     string
 	Status         string
 	RequestCount   int
@@ -420,8 +421,19 @@ type adminSubmissionDetail struct {
 	NormalizedURL  string
 	LastSubmitted  string
 	LastError      string
+	Sources        []adminSourceRow
 	Runs           []adminRunRow
 	Candidates     []adminCandidateRow
+}
+
+type adminSourceRow struct {
+	ID              int64
+	TopicSlug       string
+	Status          string
+	SourceType      string
+	NormalizedURL   string
+	LastProcessedAt string
+	LastError       string
 }
 
 type adminRunRow struct {
@@ -583,6 +595,41 @@ func (a app) adminSubmissionHandler(w http.ResponseWriter, r *http.Request, toke
 			return
 		}
 		redirectAdminSubmission(w, r, submissionID, "activated", "")
+	case "create-source":
+		source, err := topicsource.CreateFromSubmission(r.Context(), a.db, topicsource.CreateFromSubmissionInput{
+			SubmissionID: submissionID,
+			TopicSlug:    r.Form.Get("topic_slug"),
+			TopicName:    r.Form.Get("topic_name"),
+		})
+		if err != nil {
+			log.Printf("admin create source failed submission_id=%d error=%v", submissionID, err)
+			redirectAdminSubmission(w, r, submissionID, "", err.Error())
+			return
+		}
+		redirectAdminSubmission(w, r, submissionID, fmt.Sprintf("created source %d", source.ID), "")
+	case "process-source":
+		sourceID, err := parsePositiveID(r.Form.Get("source_id"), "source-id")
+		if err != nil {
+			redirectAdminSubmission(w, r, submissionID, "", err.Error())
+			return
+		}
+		source, err := topicsource.Load(r.Context(), a.db, sourceID)
+		if err != nil {
+			log.Printf("admin load source failed submission_id=%d source_id=%d error=%v", submissionID, sourceID, err)
+			redirectAdminSubmission(w, r, submissionID, "", err.Error())
+			return
+		}
+		if !source.CreatedFromSubmissionID.Valid || source.CreatedFromSubmissionID.Int64 != submissionID {
+			redirectAdminSubmission(w, r, submissionID, "", "source does not belong to submission")
+			return
+		}
+		result, err := pipeline.ProcessSource(r.Context(), a.db, sourceID, pipeline.Options{})
+		if err != nil {
+			log.Printf("admin process source failed submission_id=%d source_id=%d error=%v", submissionID, sourceID, err)
+			redirectAdminSubmission(w, r, submissionID, "", err.Error())
+			return
+		}
+		redirectAdminSubmission(w, r, submissionID, fmt.Sprintf("processed source %d: %d eligible", sourceID, result.EligibleCount), "")
 	default:
 		http.NotFound(w, r)
 	}
@@ -648,7 +695,12 @@ func adminGetSubmission(ctx context.Context, conn *sql.DB, submissionID int64) (
 	if err != nil {
 		return adminSubmissionDetail{}, err
 	}
+	detail.SuggestedSlug = slugFromTopicName(detail.SuggestedTopic)
 
+	sources, err := adminListSources(ctx, conn, submissionID)
+	if err != nil {
+		return adminSubmissionDetail{}, err
+	}
 	runs, err := adminListRuns(ctx, conn, submissionID)
 	if err != nil {
 		return adminSubmissionDetail{}, err
@@ -657,9 +709,50 @@ func adminGetSubmission(ctx context.Context, conn *sql.DB, submissionID int64) (
 	if err != nil {
 		return adminSubmissionDetail{}, err
 	}
+	detail.Sources = sources
 	detail.Runs = runs
 	detail.Candidates = candidates
 	return detail, nil
+}
+
+func adminListSources(ctx context.Context, conn *sql.DB, submissionID int64) ([]adminSourceRow, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT
+			ts.id,
+			t.slug,
+			ts.status,
+			ts.source_type,
+			ts.normalized_url,
+			COALESCE(ts.last_processed_at, ''),
+			ts.last_error
+		FROM topic_sources ts
+		JOIN topics t ON t.id = ts.topic_id
+		WHERE ts.created_from_submission_id = ?
+		ORDER BY ts.id DESC
+	`, submissionID)
+	if err != nil {
+		return nil, fmt.Errorf("query admin sources: %w", err)
+	}
+	defer rows.Close()
+
+	var sources []adminSourceRow
+	for rows.Next() {
+		var source adminSourceRow
+		if err := rows.Scan(&source.ID, &source.TopicSlug, &source.Status, &source.SourceType, &source.NormalizedURL, &source.LastProcessedAt, &source.LastError); err != nil {
+			return nil, fmt.Errorf("scan admin source: %w", err)
+		}
+		if source.LastProcessedAt == "" {
+			source.LastProcessedAt = "-"
+		}
+		if source.LastError == "" {
+			source.LastError = "-"
+		}
+		sources = append(sources, source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate admin sources: %w", err)
+	}
+	return sources, nil
 }
 
 func adminListRuns(ctx context.Context, conn *sql.DB, submissionID int64) ([]adminRunRow, error) {
@@ -1242,7 +1335,7 @@ var submissionsTemplate = template.Must(template.New("submissions").Parse(`<!doc
 <body>
   <main>
     <h1>Documentation submissions</h1>
-    <p>Submit a documentation homepage for a topic that is missing.</p>
+    <p>Submit a documentation source URL for a new or existing topic.</p>
     <form method="post" action="/submissions">
       <label>
         Documentation URL
@@ -1370,6 +1463,7 @@ var readingTemplate = template.Must(template.New("reading").Parse(`<!doctype htm
       </p>
       <a class="button" href="{{.URL}}">Read</a>
       <nav><a href="/topics">All topics</a></nav>
+      <nav><a href="/submissions?topic={{.TopicName}}">Suggest documentation source</a></nav>
     </article>
   </main>
 </body>
@@ -1504,6 +1598,9 @@ var adminSubmissionDetailTemplate = template.Must(template.New("admin-submission
     th, td { padding: 0.75rem; border-bottom: 1px solid #e4e7eb; text-align: left; vertical-align: top; }
     th { color: #52606d; font-size: 0.875rem; }
     form { display: inline; margin-right: 0.5rem; }
+    .source-form { display: grid; gap: 0.75rem; max-width: 32rem; margin: 0 0 1rem; }
+    .source-form label { display: grid; gap: 0.35rem; color: #52606d; }
+    input { min-width: 0; padding: 0.6rem 0.75rem; border: 1px solid #cbd2d9; border-radius: 6px; font: inherit; color: #1f2933; background: #fff; }
     button { padding: 0.6rem 0.85rem; border: 0; border-radius: 6px; font: inherit; color: #fff; background: #1f2933; cursor: pointer; }
     a { color: #1f2933; }
     .notice { color: #067647; }
@@ -1528,6 +1625,22 @@ var adminSubmissionDetailTemplate = template.Must(template.New("admin-submission
     </form>
 
     <section>
+      <h2>Create Source</h2>
+      <form class="source-form" method="post" action="/admin/submissions/{{.Submission.ID}}/create-source">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label>
+          Topic slug
+          <input name="topic_slug" value="{{.Submission.SuggestedSlug}}" required>
+        </label>
+        <label>
+          Topic name
+          <input name="topic_name" value="{{.Submission.SuggestedTopic}}">
+        </label>
+        <button type="submit">Create Source</button>
+      </form>
+    </section>
+
+    <section>
       <h2>Details</h2>
       <dl>
         <dt>Topic</dt><dd>{{if .Submission.SuggestedTopic}}{{.Submission.SuggestedTopic}}{{else}}-{{end}}</dd>
@@ -1539,6 +1652,35 @@ var adminSubmissionDetailTemplate = template.Must(template.New("admin-submission
         <dt>Last submitted</dt><dd>{{.Submission.LastSubmitted}}</dd>
         <dt>Last error</dt><dd>{{if .Submission.LastError}}{{.Submission.LastError}}{{else}}-{{end}}</dd>
       </dl>
+    </section>
+
+    <section>
+      <h2>Sources</h2>
+      {{if .Submission.Sources}}
+      <table>
+        <thead><tr><th>ID</th><th>Topic</th><th>Status</th><th>Type</th><th>URL</th><th>Last processed</th><th>Error</th><th>Action</th></tr></thead>
+        <tbody>
+          {{range .Submission.Sources}}
+          <tr>
+            <td>{{.ID}}</td>
+            <td>{{.TopicSlug}}</td>
+            <td>{{.Status}}</td>
+            <td>{{.SourceType}}</td>
+            <td class="url">{{.NormalizedURL}}</td>
+            <td>{{.LastProcessedAt}}</td>
+            <td>{{.LastError}}</td>
+            <td>
+              <form method="post" action="/admin/submissions/{{$.Submission.ID}}/process-source">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="source_id" value="{{.ID}}">
+                <button type="submit">Process Source</button>
+              </form>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}<p>No sources.</p>{{end}}
     </section>
 
     <section>
@@ -1887,6 +2029,28 @@ func parsePositiveID(value string, name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return id, nil
+}
+
+func slugFromTopicName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	previousDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			previousDash = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			previousDash = false
+		default:
+			if builder.Len() > 0 && !previousDash {
+				builder.WriteByte('-')
+				previousDash = true
+			}
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }
 
 func writePrettyJSON(out *os.File, value any) error {

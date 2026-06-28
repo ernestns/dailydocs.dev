@@ -142,6 +142,9 @@ func TestReadingPageUsesTodayForTopicOnlyURL(t *testing.T) {
 	if !strings.Contains(body, "Write-Ahead Logging") {
 		t.Fatalf("expected reading title in body:\n%s", body)
 	}
+	if !strings.Contains(body, `href="/submissions?topic=SQLite"`) {
+		t.Fatalf("expected source suggestion link:\n%s", body)
+	}
 }
 
 func TestDatedReadingPageCreatesAssignment(t *testing.T) {
@@ -272,6 +275,9 @@ func TestSubmissionsPageIsNoindexed(t *testing.T) {
 	}
 	if !strings.Contains(body, "Documentation URL") {
 		t.Fatalf("expected submission form:\n%s", body)
+	}
+	if !strings.Contains(body, "Submit a documentation source URL for a new or existing topic.") {
+		t.Fatalf("expected source submission copy:\n%s", body)
 	}
 }
 
@@ -512,6 +518,66 @@ func TestAdminCanProcessAndActivateSubmission(t *testing.T) {
 	}
 	if topicCount != 1 {
 		t.Fatalf("expected active rust topic, got %d", topicCount)
+	}
+}
+
+func TestAdminCanCreateTopicSourceFromSubmission(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "test-admin-token")
+
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+
+	submissionID := insertWebSubmission(t, ctx, conn, "https://doc.rust-lang.org/stable/book", "Rust")
+
+	handler := newTestHandler(conn)
+	cookie := adminLoginCookie(t, handler, "test-admin-token")
+	csrf := adminCSRFToken(t, handler, cookie, submissionID)
+
+	form := url.Values{
+		"csrf":       {csrf},
+		"topic_slug": {"rust"},
+		"topic_name": {"Rust"},
+	}
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/submissions/%d/create-source", submissionID), strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected create source redirect, got %d: %s", response.Code, response.Body.String())
+	}
+
+	var sourceCount int
+	if err := conn.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM topic_sources ts
+		JOIN topics t ON t.id = ts.topic_id
+		WHERE t.slug = 'rust'
+			AND ts.normalized_url = 'https://doc.rust-lang.org/stable/book'
+			AND ts.created_from_submission_id = ?
+	`, submissionID).Scan(&sourceCount); err != nil {
+		t.Fatalf("count topic sources: %v", err)
+	}
+	if sourceCount != 1 {
+		t.Fatalf("expected one rust source, got %d", sourceCount)
+	}
+
+	detailRequest := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/admin/submissions/%d", submissionID), nil)
+	detailRequest.AddCookie(cookie)
+	detailResponse := httptest.NewRecorder()
+	handler.ServeHTTP(detailResponse, detailRequest)
+
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("expected detail 200, got %d: %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	body := detailResponse.Body.String()
+	if !strings.Contains(body, "Process Source") {
+		t.Fatalf("expected process source action:\n%s", body)
+	}
+	if !strings.Contains(body, "https://doc.rust-lang.org/stable/book") {
+		t.Fatalf("expected source URL in detail:\n%s", body)
 	}
 }
 
