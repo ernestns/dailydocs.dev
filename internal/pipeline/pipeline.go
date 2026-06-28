@@ -241,6 +241,11 @@ func ProcessSource(ctx context.Context, conn *sql.DB, sourceID int64, opts Optio
 		return Result{}, err
 	}
 
+	if err := markTopicSourceProcessing(ctx, conn, sourceID); err != nil {
+		_ = failRun(ctx, conn, runID, Result{SubmissionID: sub.ID, TopicSourceID: sourceID, PipelineRunID: runID}, err)
+		return Result{}, err
+	}
+
 	result := Result{SubmissionID: sub.ID, TopicSourceID: sourceID, PipelineRunID: runID}
 	if err := process(ctx, conn, sub, runID, opts, &result); err != nil {
 		_ = failRun(ctx, conn, runID, result, err)

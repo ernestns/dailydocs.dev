@@ -73,12 +73,15 @@ func CreateForTopic(ctx context.Context, conn *sql.DB, input CreateForTopicInput
 			created_from_submission_id,
 			updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, 'active', NULLIF(?, 0), datetime('now'))
+		VALUES (?, ?, ?, ?, ?, 'pending_discovery', NULLIF(?, 0), datetime('now'))
 		ON CONFLICT(topic_id, normalized_url) DO UPDATE SET
 			base_url = excluded.base_url,
 			source_host = excluded.source_host,
 			source_type = excluded.source_type,
-			status = 'active',
+			status = CASE
+				WHEN topic_sources.status = 'disabled' THEN topic_sources.status
+				ELSE 'pending_discovery'
+			END,
 			created_from_submission_id = COALESCE(topic_sources.created_from_submission_id, excluded.created_from_submission_id),
 			updated_at = datetime('now')
 	`, input.TopicID, strings.TrimSpace(input.URL), normalizedURL, sourceHost, sourceType, input.SubmissionID)
@@ -149,12 +152,15 @@ func CreateFromSubmission(ctx context.Context, conn *sql.DB, input CreateFromSub
 			created_from_submission_id,
 			updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, 'active', ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?, 'pending_discovery', ?, datetime('now'))
 		ON CONFLICT(topic_id, normalized_url) DO UPDATE SET
 			base_url = excluded.base_url,
 			source_host = excluded.source_host,
 			source_type = excluded.source_type,
-			status = 'active',
+			status = CASE
+				WHEN topic_sources.status = 'disabled' THEN topic_sources.status
+				ELSE 'pending_discovery'
+			END,
 			created_from_submission_id = COALESCE(topic_sources.created_from_submission_id, excluded.created_from_submission_id),
 			updated_at = datetime('now')
 	`, topicID, submittedURL, normalizedURL, sourceHost, sourceType, input.SubmissionID)
@@ -226,20 +232,22 @@ func RecordDiscoveryPreview(ctx context.Context, conn *sql.DB, sourceID int64, p
 		return fmt.Errorf("encode discovery sample: %w", err)
 	}
 
-	status := ""
+	status := "ready_to_process"
 	if preview.NeedsScope {
 		status = "needs_scope"
+	} else if preview.Error != "" {
+		status = "discovery_failed"
 	}
 	_, err = conn.ExecContext(ctx, `
 		UPDATE topic_sources
-		SET status = CASE WHEN ? = '' THEN status ELSE ? END,
+		SET status = CASE WHEN status = 'disabled' THEN status ELSE ? END,
 			last_discovered_at = datetime('now'),
 			discovery_count = ?,
 			discovery_sample = ?,
 			discovery_error = ?,
 			updated_at = datetime('now')
 		WHERE id = ?
-	`, status, status, preview.Count, string(encodedSample), preview.Error, sourceID)
+	`, status, preview.Count, string(encodedSample), preview.Error, sourceID)
 	if err != nil {
 		return fmt.Errorf("record discovery preview: %w", err)
 	}

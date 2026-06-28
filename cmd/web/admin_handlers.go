@@ -68,6 +68,8 @@ type adminSourceRow struct {
 	DiscoverySample  []string
 	DiscoveryError   string
 	DiscoveryStatus  string
+	WorkflowStatus   string
+	NextAction       string
 }
 
 type adminSourceDetail struct {
@@ -525,16 +527,54 @@ func (a app) discoverSourcePreview(ctx context.Context, sourceID int64) (int, er
 }
 
 func sourceDiscoveryStatus(source adminSourceRow) string {
-	if source.DiscoveryError != "" {
-		if source.Status == "needs_scope" {
-			return "needs_scope"
+	switch source.Status {
+	case "needs_scope", "discovery_failed", "ready_to_process", "pending_discovery":
+		return source.Status
+	default:
+		if source.DiscoveryError != "" {
+			return "discovery_failed"
 		}
-		return "discovery_failed"
+		if source.DiscoveryCount > 0 {
+			return "ready_to_process"
+		}
+		return "not_discovered"
 	}
-	if source.DiscoveryCount > 0 {
-		return "ready_to_process"
+}
+
+func sourceWorkflowStatus(source adminSourceRow, runs []adminRunRow, candidates []adminCandidateRow) (string, string) {
+	switch source.Status {
+	case "pending_discovery":
+		return "Submission -> Source", "Discover"
+	case "ready_to_process":
+		return "Submission -> Source -> Discovery", "Process"
+	case "processing":
+		return "Submission -> Source -> Discovery -> Processing", "Wait for processing"
+	case "candidates_ready":
+		if hasEligibleCandidates(candidates) {
+			return "Submission -> Source -> Discovery -> Process -> Review", "Activate candidates"
+		}
+		return "Submission -> Source -> Discovery -> Process", "Review rejected candidates"
+	case "needs_scope":
+		return "Submission -> Source -> Discovery", "Add narrower source"
+	case "discovery_failed":
+		return "Submission -> Source", "Fix URL or discover again"
+	case "disabled":
+		return "Disabled", "No action"
+	default:
+		if len(runs) > 0 {
+			return "Submission -> Source -> Process", "Review latest run"
+		}
+		return "Submission -> Source", "Discover"
 	}
-	return "not_discovered"
+}
+
+func hasEligibleCandidates(candidates []adminCandidateRow) bool {
+	for _, candidate := range candidates {
+		if candidate.Status == "eligible" {
+			return true
+		}
+	}
+	return false
 }
 
 func adminListSubmissions(ctx context.Context, conn *sql.DB) ([]adminSubmissionRow, error) {
@@ -718,8 +758,6 @@ func adminGetSource(ctx context.Context, conn *sql.DB, sourceID int64) (adminSou
 	if discoverySample != "" {
 		_ = json.Unmarshal([]byte(discoverySample), &detail.DiscoverySample)
 	}
-	detail.DiscoveryStatus = sourceDiscoveryStatus(detail.adminSourceRow)
-
 	runs, err := adminListSourceRuns(ctx, conn, sourceID)
 	if err != nil {
 		return adminSourceDetail{}, err
@@ -730,6 +768,8 @@ func adminGetSource(ctx context.Context, conn *sql.DB, sourceID int64) (adminSou
 	}
 	detail.Runs = runs
 	detail.Candidates = candidates
+	detail.DiscoveryStatus = sourceDiscoveryStatus(detail.adminSourceRow)
+	detail.WorkflowStatus, detail.NextAction = sourceWorkflowStatus(detail.adminSourceRow, runs, candidates)
 	return detail, nil
 }
 

@@ -5,7 +5,7 @@ CREATE TABLE topic_sources (
 	normalized_url TEXT NOT NULL,
 	source_host TEXT NOT NULL,
 	source_type TEXT NOT NULL DEFAULT 'documentation',
-	status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'needs_scope')),
+	status TEXT NOT NULL DEFAULT 'pending_discovery' CHECK (status IN ('pending_discovery', 'ready_to_process', 'processing', 'candidates_ready', 'needs_scope', 'discovery_failed', 'disabled')),
 	created_from_submission_id INTEGER REFERENCES documentation_submissions(id) ON DELETE SET NULL,
 	last_processed_at TEXT,
 	last_error TEXT NOT NULL DEFAULT '',

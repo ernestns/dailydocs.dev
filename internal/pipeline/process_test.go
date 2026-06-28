@@ -216,8 +216,8 @@ func TestProcessSourcePersistsSourceLinkedCandidates(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, "SELECT status, last_processed_at, last_error FROM topic_sources WHERE id = ?", source.ID).Scan(&status, &processed, &lastError); err != nil {
 		t.Fatalf("read source processed timestamp: %v", err)
 	}
-	if status != "active" {
-		t.Fatalf("expected source status active after successful processing, got %q", status)
+	if status != "candidates_ready" {
+		t.Fatalf("expected source status candidates_ready after successful processing, got %q", status)
 	}
 	if !processed.Valid || processed.String == "" {
 		t.Fatalf("expected source last_processed_at to be set")

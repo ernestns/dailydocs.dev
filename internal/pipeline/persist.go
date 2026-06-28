@@ -262,7 +262,7 @@ func loadTopicSource(ctx context.Context, conn *sql.DB, id int64) (sourceSubmiss
 		FROM topic_sources ts
 		JOIN topics t ON t.id = ts.topic_id
 		WHERE ts.id = ?
-			AND ts.status IN ('active', 'needs_scope')
+			AND ts.status != 'disabled'
 	`, id).Scan(&sub.TopicSourceID, &sub.ID, &sub.TopicID, &sub.TopicSlug, &sub.TopicName, &sub.SubmittedURL, &sub.NormalizedURL, &sub.SourceHost)
 	if err != nil {
 		return sourceSubmission{}, fmt.Errorf("load topic source: %w", err)
@@ -326,10 +326,22 @@ func markSubmissionFailed(ctx context.Context, conn *sql.DB, submissionID int64,
 	return err
 }
 
+func markTopicSourceProcessing(ctx context.Context, conn *sql.DB, sourceID int64) error {
+	_, err := conn.ExecContext(ctx, `
+		UPDATE topic_sources
+		SET status = 'processing',
+			last_error = '',
+			updated_at = datetime('now')
+		WHERE id = ?
+			AND status != 'disabled'
+	`, sourceID)
+	return err
+}
+
 func markTopicSourceProcessed(ctx context.Context, conn *sql.DB, sourceID int64) error {
 	_, err := conn.ExecContext(ctx, `
 		UPDATE topic_sources
-		SET status = 'active',
+		SET status = 'candidates_ready',
 			last_processed_at = datetime('now'),
 			last_error = '',
 			updated_at = datetime('now')
@@ -339,7 +351,7 @@ func markTopicSourceProcessed(ctx context.Context, conn *sql.DB, sourceID int64)
 }
 
 func markTopicSourceFailed(ctx context.Context, conn *sql.DB, sourceID int64, runErr error) error {
-	status := "active"
+	status := "ready_to_process"
 	var tooBroad DiscoveryTooBroadError
 	if errors.As(runErr, &tooBroad) {
 		status = "needs_scope"
