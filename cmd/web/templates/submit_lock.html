@@ -1,0 +1,20 @@
+{{define "submitLockScript"}}
+<script>
+  document.querySelectorAll('form[method="post"]').forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      if (form.dataset.submitting === "true") {
+        event.preventDefault();
+        return;
+      }
+      form.dataset.submitting = "true";
+      const submitter = event.submitter || form.querySelector('button[type="submit"]');
+      form.querySelectorAll("button").forEach((button) => {
+        button.disabled = true;
+      });
+      if (submitter) {
+        submitter.textContent = "Working...";
+      }
+    });
+  });
+</script>
+{{end}}
