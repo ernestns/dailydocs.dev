@@ -54,6 +54,30 @@ smoke:
 	curl --fail http://localhost:8080/
 	curl --fail http://localhost:8080/health
 
+# Discover candidate documentation URLs from a documentation homepage
+pipeline-discover url: build
+	./bin/dailydocs discover-url "{{url}}"
+
+# Extract metadata for one documentation page
+pipeline-inspect url: build
+	./bin/dailydocs inspect-url "{{url}}"
+
+# Send one documentation page to the AI gate reviewer
+pipeline-gate url: build
+	./scripts/with-env.sh ./bin/dailydocs gate-url --show-request --show-response "{{url}}"
+
+# Create a topic source from a queued documentation submission
+pipeline-create-source submission_id topic_slug topic_name='': build
+	./scripts/with-env.sh ./bin/dailydocs create-source-from-submission "{{submission_id}}" "{{topic_slug}}" "{{topic_name}}"
+
+# List approved topic sources
+pipeline-sources: build
+	./scripts/with-env.sh ./bin/dailydocs list-sources
+
+# Process one approved topic source
+pipeline-process-source source_id: build
+	./scripts/with-env.sh ./bin/dailydocs process-source "{{source_id}}"
+
 # Deploy using REMOTE and REPO_DIR from local .env
 deploy: pre-deploy
 	./scripts/with-env.sh sh -c 'test -n "$REMOTE" && test -n "$REPO_DIR" && REMOTE="$REMOTE" REPO_DIR="$REPO_DIR" ./scripts/deploy-remote.sh'
