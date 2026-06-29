@@ -90,8 +90,8 @@ topic name
   -> deduplicate by topic and URL
   -> review candidates with GPT-5 nano when configured
   -> store search run
-  -> store accepted search results
-  -> create active pages
+  -> store evaluated search results
+  -> create active pages for accepted results
 ```
 
 Tavily query goals:
@@ -103,6 +103,8 @@ Tavily query goals:
 - return enough results to seed the first daily rotation
 
 GPT-5 nano reviews search candidate metadata when `OPENAI_API_KEY` is configured. Without the key, the pipeline uses deterministic ranking and filtering so local development still works.
+
+Every reviewed candidate is stored in `topic_search_results`. Only accepted candidates become active `pages`.
 
 ## Search Limits
 

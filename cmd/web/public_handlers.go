@@ -125,7 +125,7 @@ func (a app) topicsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	topics, err := listTopics(r.Context(), a.db, "", 0)
+	topics, err := listRequestedTopics(r.Context(), a.db)
 	if err != nil {
 		log.Printf("list all topics failed: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -133,8 +133,38 @@ func (a app) topicsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderTemplate(w, topicsTemplate, struct {
-		Topics []topicOption
+		Topics []topicListItem
 	}{Topics: topics})
+}
+
+func (a app) topicEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	slug, ok := parseTopicEvaluationsPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	topic, results, err := loadTopicEvaluations(r.Context(), a.db, slug)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("load topic evaluations failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	renderTemplate(w, topicEvaluationsTemplate, struct {
+		Topic   topicListItem
+		Results []evaluationResult
+	}{Topic: topic, Results: results})
 }
 
 func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +250,26 @@ type topicOption struct {
 	Name string `json:"name"`
 }
 
+type topicListItem struct {
+	Slug           string
+	Name           string
+	Status         string
+	EvaluatedCount int
+	AcceptedCount  int
+}
+
+type evaluationResult struct {
+	Title          string
+	URL            string
+	Source         string
+	Snippet        string
+	Rank           int
+	ReviewerScore  int
+	PageType       string
+	ReviewerReason string
+	Accepted       bool
+}
+
 type queuedTopicView struct {
 	Slug   string
 	Name   string
@@ -265,6 +315,93 @@ func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]t
 	return topics, nil
 }
 
+func listRequestedTopics(ctx context.Context, conn *sql.DB) ([]topicListItem, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT
+			t.slug,
+			t.name,
+			t.status,
+			COUNT(r.id) AS evaluated_count,
+			COALESCE(SUM(r.accepted), 0) AS accepted_count
+		FROM topics t
+		LEFT JOIN topic_search_results r ON r.topic_id = t.id
+		WHERE t.status != 'disabled'
+		GROUP BY t.id
+		ORDER BY t.updated_at DESC, t.name ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query requested topics: %w", err)
+	}
+	defer rows.Close()
+
+	var topics []topicListItem
+	for rows.Next() {
+		var topic topicListItem
+		if err := rows.Scan(&topic.Slug, &topic.Name, &topic.Status, &topic.EvaluatedCount, &topic.AcceptedCount); err != nil {
+			return nil, fmt.Errorf("scan requested topic: %w", err)
+		}
+		topics = append(topics, topic)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate requested topics: %w", err)
+	}
+	return topics, nil
+}
+
+func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topicListItem, []evaluationResult, error) {
+	var topic topicListItem
+	var topicID int64
+	if err := conn.QueryRowContext(ctx, `
+		SELECT id, slug, name, status
+		FROM topics
+		WHERE slug = ?
+			AND status != 'disabled'
+	`, slug).Scan(&topicID, &topic.Slug, &topic.Name, &topic.Status); err != nil {
+		return topicListItem{}, nil, err
+	}
+
+	rows, err := conn.QueryContext(ctx, `
+		SELECT
+			title,
+			url,
+			source,
+			snippet,
+			rank,
+			COALESCE(reviewer_score, 0),
+			page_type,
+			reviewer_reason,
+			accepted
+		FROM topic_search_results
+		WHERE topic_id = ?
+		ORDER BY search_run_id DESC, accepted DESC, COALESCE(reviewer_score, 0) DESC, rank ASC
+	`, topicID)
+	if err != nil {
+		return topicListItem{}, nil, fmt.Errorf("query topic evaluations: %w", err)
+	}
+	defer rows.Close()
+
+	var results []evaluationResult
+	for rows.Next() {
+		var result evaluationResult
+		var accepted int
+		if err := rows.Scan(&result.Title, &result.URL, &result.Source, &result.Snippet, &result.Rank, &result.ReviewerScore, &result.PageType, &result.ReviewerReason, &accepted); err != nil {
+			return topicListItem{}, nil, fmt.Errorf("scan topic evaluation: %w", err)
+		}
+		result.Accepted = accepted == 1
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return topicListItem{}, nil, fmt.Errorf("iterate topic evaluations: %w", err)
+	}
+	topic.EvaluatedCount = len(results)
+	for _, result := range results {
+		if result.Accepted {
+			topic.AcceptedCount++
+		}
+	}
+	return topic, results, nil
+}
+
 func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, error) {
 	slug := slugFromTopicName(topic)
 	if slug == "" {
@@ -279,13 +416,26 @@ func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, err
 				WHEN topics.name = topics.slug THEN excluded.name
 				ELSE topics.name
 			END,
-			status = 'queued',
 			updated_at = datetime('now')
 	`, slug, name)
 	if err != nil {
 		return queuedTopicView{}, fmt.Errorf("upsert queued topic: %w", err)
 	}
 	return loadQueuedTopic(ctx, a.db, slug)
+}
+
+func parseTopicEvaluationsPath(path string) (string, bool) {
+	prefix := "/topics/"
+	suffix := "/evaluations"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+	slug := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	slug = strings.Trim(slug, "/")
+	if !topicPathPattern.MatchString(slug) {
+		return "", false
+	}
+	return slug, true
 }
 
 func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string) (queuedTopicView, error) {

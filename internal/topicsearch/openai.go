@@ -189,14 +189,17 @@ Your job is to determine how suitable each page is for that purpose.
 
 Score each candidate from 0 to 100.
 
-A score of 100 means this is among the best pages in the documentation set for daily reading.
-A score of 75 means it is worthwhile but not exceptional.
+A score of 100 means this is among the best specific concept pages for daily reading.
+A score of 75 means it is a worthwhile concept page but not exceptional.
 A score below 40 means it should almost never be shown.
 
 Only set should_store=true when the page itself is a good reading.
+The best DailyDocs pages target a specific concept, technique, feature, or workflow.
+Good examples include pages like "Generics", "Ownership", "Transactions", "Partial Indexes", "Context", or "Multi-stage Builds".
+Do not store broad books, table-of-contents pages, learning hubs, topic homepages, or "getting started with the whole topic" pages.
 Do not store pages whose primary value is a list of books, resource links, courses, tools, or other pages.
 Resource lists and "best books/resources" pages should usually score below 50.
-Landing pages and learning hubs should usually score below 65 unless they contain substantial original teaching content.
+Landing pages, learning hubs, and entire books should usually score below 65 even when official or authoritative.
 
 Consider:
 - educational value
@@ -204,9 +207,10 @@ Consider:
 - standalone readability
 - conceptual depth
 - practical usefulness
+- specificity of the concept being taught
 - whether an experienced engineer would recommend reading it
 
-Do not favor API indexes, release notes, navigation pages, social posts, shallow listicles, resource lists, or generated reference material.
+Do not favor API indexes, release notes, navigation pages, social posts, shallow listicles, resource lists, whole books, or generated reference material.
 Write reasons in concise ASCII English only.
 
 Return only JSON matching the schema.

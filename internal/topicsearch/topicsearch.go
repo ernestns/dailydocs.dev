@@ -92,6 +92,7 @@ type storedResult struct {
 	Score        int
 	PageType     string
 	Reason       string
+	Accepted     bool
 }
 
 func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) (Result, error) {
@@ -170,6 +171,7 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 		return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, ErrNoResults
 	}
 	var reviewOutput ReviewOutput
+	acceptedCount := len(normalized)
 	if opts.Reviewer != nil {
 		normalized, reviewOutput, err = reviewResults(ctx, name, opts.Reviewer, normalized, minScore)
 		if err != nil {
@@ -178,15 +180,10 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 			}
 			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, err
 		}
-		if len(normalized) == 0 {
-			if err := failRunAndTopic(ctx, conn, topicID, runID, ErrNoResults); err != nil {
-				return Result{}, err
-			}
-			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, ErrNoResults
-		}
+		acceptedCount = countAccepted(normalized)
 	}
 	if len(normalized) > maxResults {
-		normalized = normalized[:maxResults]
+		normalized = capAcceptedResults(normalized, maxResults)
 	}
 	for i := range normalized {
 		normalized[i].Rank = i + 1
@@ -198,6 +195,13 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 			return Result{}, err
 		}
 		return Result{}, err
+	}
+
+	if acceptedCount == 0 {
+		if err := failRunAndTopic(ctx, conn, topicID, runID, ErrNoResults); err != nil {
+			return Result{}, err
+		}
+		return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed", ResultCount: len(providerResults)}, ErrNoResults
 	}
 
 	if err := completeRunAndTopic(ctx, conn, topicID, runID, len(providerResults), storedCount, reviewOutput); err != nil {
@@ -216,7 +220,7 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 }
 
 func buildQuery(topic string) string {
-	return fmt.Sprintf("%s programming language guide tutorial reference book", topic)
+	return fmt.Sprintf("%s specific concept tutorial guide deep dive documentation", topic)
 }
 
 func currentTime(now func() time.Time) time.Time {
@@ -378,16 +382,20 @@ func storeResults(ctx context.Context, conn *sql.DB, topicID int64, runID int64,
 	if err != nil {
 		return 0, err
 	}
-	for i, result := range results {
-		result.ReadingOrder = nextOrder + i
-		pageID, err := upsertPage(ctx, tx, topicID, runID, result)
-		if err != nil {
-			return 0, err
+	for _, result := range results {
+		var pageID sql.NullInt64
+		if result.Accepted {
+			result.ReadingOrder = nextOrder + stored
+			id, err := upsertPage(ctx, tx, topicID, runID, result)
+			if err != nil {
+				return 0, err
+			}
+			pageID = sql.NullInt64{Int64: id, Valid: true}
+			stored++
 		}
 		if err := upsertSearchResult(ctx, tx, topicID, runID, pageID, result); err != nil {
 			return 0, err
 		}
-		stored++
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -444,7 +452,11 @@ func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, res
 	return pageID, nil
 }
 
-func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, pageID int64, result storedResult) error {
+func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, pageID sql.NullInt64, result storedResult) error {
+	accepted := 0
+	if result.Accepted {
+		accepted = 1
+	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO topic_search_results (
 			topic_id,
@@ -457,9 +469,10 @@ func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID in
 			reviewer_score,
 			page_type,
 			reviewer_reason,
+			accepted,
 			stored_as_page_id
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(topic_id, url) DO UPDATE SET
 			search_run_id = excluded.search_run_id,
 			title = excluded.title,
@@ -469,8 +482,9 @@ func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID in
 			reviewer_score = excluded.reviewer_score,
 			page_type = excluded.page_type,
 			reviewer_reason = excluded.reviewer_reason,
+			accepted = excluded.accepted,
 			stored_as_page_id = excluded.stored_as_page_id
-	`, topicID, runID, result.Title, result.URL, result.Source, result.Snippet, result.Rank, result.Score, result.PageType, result.Reason, pageID)
+	`, topicID, runID, result.Title, result.URL, result.Source, result.Snippet, result.Rank, result.Score, result.PageType, result.Reason, accepted, pageID)
 	if err != nil {
 		return fmt.Errorf("upsert search result %q: %w", result.URL, err)
 	}
@@ -499,12 +513,13 @@ func normalizeResults(results []SearchResult, maxResults int) []storedResult {
 		seen[normalizedURL] = struct{}{}
 		snippet := strings.TrimSpace(result.Content)
 		normalized = append(normalized, storedResult{
-			Title:   title,
-			URL:     normalizedURL,
-			Source:  source,
-			Snippet: snippet,
-			Rank:    i + 1,
-			Score:   interestingnessScore(title, normalizedURL, source, snippet, result.Score),
+			Title:    title,
+			URL:      normalizedURL,
+			Source:   source,
+			Snippet:  snippet,
+			Rank:     i + 1,
+			Score:    interestingnessScore(title, normalizedURL, source, snippet, result.Score),
+			Accepted: true,
 		})
 	}
 	sort.SliceStable(normalized, func(i, j int) bool {
@@ -537,28 +552,59 @@ func reviewResults(ctx context.Context, topic string, reviewer Reviewer, results
 		return nil, ReviewOutput{}, fmt.Errorf("review topic search results: %w", err)
 	}
 
-	accepted := make([]storedResult, 0, len(results))
+	reviewed := make([]storedResult, 0, len(results))
 	for _, review := range reviewOutput.Results {
 		resultIndex, ok := byIndex[review.Index]
 		if !ok {
-			continue
-		}
-		if !review.ShouldStore || review.DailyDocsScore < minScore || rejectedPageType(review.PageType) {
 			continue
 		}
 		result := results[resultIndex]
 		result.Score = review.DailyDocsScore
 		result.PageType = strings.TrimSpace(review.PageType)
 		result.Reason = sanitizeASCII(truncate(strings.TrimSpace(review.Reason), 500))
-		accepted = append(accepted, result)
-	}
-	sort.SliceStable(accepted, func(i, j int) bool {
-		if accepted[i].Score != accepted[j].Score {
-			return accepted[i].Score > accepted[j].Score
+		result.Accepted = true
+		if !review.ShouldStore || review.DailyDocsScore < minScore || rejectedPageType(review.PageType) || broadReadingURL(result.URL) {
+			result.Accepted = false
 		}
-		return accepted[i].Rank < accepted[j].Rank
+		reviewed = append(reviewed, result)
+	}
+	sort.SliceStable(reviewed, func(i, j int) bool {
+		if reviewed[i].Accepted != reviewed[j].Accepted {
+			return reviewed[i].Accepted
+		}
+		if reviewed[i].Score != reviewed[j].Score {
+			return reviewed[i].Score > reviewed[j].Score
+		}
+		return reviewed[i].Rank < reviewed[j].Rank
 	})
-	return accepted, reviewOutput, nil
+	return reviewed, reviewOutput, nil
+}
+
+func countAccepted(results []storedResult) int {
+	count := 0
+	for _, result := range results {
+		if result.Accepted {
+			count++
+		}
+	}
+	return count
+}
+
+func capAcceptedResults(results []storedResult, maxAccepted int) []storedResult {
+	if maxAccepted < 1 {
+		return results
+	}
+	accepted := 0
+	for i := range results {
+		if !results[i].Accepted {
+			continue
+		}
+		accepted++
+		if accepted > maxAccepted {
+			results[i].Accepted = false
+		}
+	}
+	return results
 }
 
 func rejectedPageType(pageType string) bool {
@@ -570,13 +616,33 @@ func rejectedPageType(pageType string) bool {
 	}
 }
 
+func broadReadingURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return true
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Host), "www.")
+	path := strings.Trim(strings.ToLower(parsed.Path), "/")
+	if path == "" {
+		return true
+	}
+	switch host {
+	case "doc.rust-lang.org":
+		return path == "book" || path == "stable/book" || strings.HasSuffix(path, "/book")
+	case "rust-lang.org":
+		return path == "learn"
+	default:
+		return false
+	}
+}
+
 func interestingnessScore(title string, normalizedURL string, host string, snippet string, providerScore float64) int {
 	lowerTitle := strings.ToLower(title)
 	lowerURL := strings.ToLower(normalizedURL)
 	lowerSnippet := strings.ToLower(snippet)
 	score := int(providerScore * 10)
 
-	addForContains(&score, lowerTitle, 24, "guide", "book", "tutorial", "concept", "deep dive", "reference", "learn", "documentation", "docs")
+	addForContains(&score, lowerTitle, 24, "guide", "tutorial", "concept", "deep dive", "ownership", "borrowing", "lifetime", "context", "transaction", "index")
 	addForContains(&score, lowerURL, 20, "/book", "/guide", "/learn", "/docs", "/doc", "/reference", "/tutorial", "/manual")
 	addForContains(&score, lowerSnippet, 12, "learn", "guide", "explain", "concept", "reference", "documentation", "tutorial")
 
@@ -588,7 +654,7 @@ func interestingnessScore(title string, normalizedURL string, host string, snipp
 		score += 10
 	}
 
-	penalizeForContains(&score, lowerTitle, 30, "why ", "gold standard", "homepage", "home page", "best ")
+	penalizeForContains(&score, lowerTitle, 30, "why ", "gold standard", "homepage", "home page", "best ", "learn rust", "programming language")
 	penalizeForContains(&score, lowerURL, 30, "web.mit.edu", "/releases", "/news", "/blog", "/tags", "/search")
 	if strings.HasSuffix(lowerURL, "/") || strings.Count(strings.TrimSuffix(lowerURL, "/"), "/") <= 2 {
 		score -= 10

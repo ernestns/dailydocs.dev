@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Topics - DailyDocs</title>
+  <title>{{.Topic.Name}} Evaluations - DailyDocs</title>
   <style>
     body {
       margin: 0;
@@ -12,22 +12,20 @@
       background: #f7f8fa;
     }
     main {
-      width: min(42rem, 100%);
+      width: min(64rem, 100%);
       margin: 0 auto;
       padding: 2rem;
       box-sizing: border-box;
     }
     h1 {
-      margin: 0 0 1rem;
+      margin: 0 0 0.5rem;
       font-size: clamp(2rem, 7vw, 4rem);
       line-height: 1;
     }
-    ul {
+    p {
       margin: 0 0 1.5rem;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 0.65rem;
+      color: #52606d;
+      line-height: 1.6;
     }
     table {
       width: 100%;
@@ -47,50 +45,56 @@
       font-size: 0.85rem;
       font-weight: 600;
     }
-    .status {
-      text-transform: capitalize;
-    }
     a {
       color: #1f2933;
     }
-    p {
-      margin: 0;
+    .status {
+      text-transform: capitalize;
+    }
+    .reason {
       color: #52606d;
-      line-height: 1.6;
+      max-width: 28rem;
     }
   </style>
 </head>
 <body>
   <main>
-    <h1>Topics</h1>
-    {{if .Topics}}
+    <h1>{{.Topic.Name}}</h1>
+    <p>
+      <span class="status">{{.Topic.Status}}</span> ·
+      {{.Topic.AcceptedCount}} accepted ·
+      {{.Topic.EvaluatedCount}} evaluated
+    </p>
+    {{if .Results}}
     <table>
       <thead>
         <tr>
-          <th>Topic</th>
-          <th>Status</th>
-          <th>Accepted</th>
-          <th>Evaluated</th>
+          <th>Result</th>
+          <th>Decision</th>
+          <th>Score</th>
+          <th>Type</th>
+          <th>Reason</th>
         </tr>
       </thead>
       <tbody>
-        {{range .Topics}}
+        {{range .Results}}
         <tr>
           <td>
-            <a href="/{{.Slug}}">{{.Name}}</a><br>
-            <a href="/topics/{{.Slug}}/evaluations">Evaluations</a>
+            <a href="{{.URL}}">{{.Title}}</a><br>
+            {{.Source}}
           </td>
-          <td class="status">{{.Status}}</td>
-          <td>{{.AcceptedCount}}</td>
-          <td>{{.EvaluatedCount}}</td>
+          <td>{{if .Accepted}}Accepted{{else}}Rejected{{end}}</td>
+          <td>{{.ReviewerScore}}</td>
+          <td>{{.PageType}}</td>
+          <td class="reason">{{.ReviewerReason}}</td>
         </tr>
         {{end}}
       </tbody>
     </table>
     {{else}}
-    <p>No topics yet.</p>
+    <p>No evaluated pages yet.</p>
     {{end}}
-    <p><a href="/">Home</a></p>
+    <p><a href="/topics">All topics</a> · <a href="/">Home</a></p>
   </main>
 </body>
 </html>

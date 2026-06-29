@@ -101,9 +101,10 @@ Reason: search-only results produced too many pages about documentation, listicl
 
 Implications:
 
-- Store the search run and returned results.
-- Convert normalized, deduplicated, reviewed results into active pages.
-- Store reviewer score and page type when available.
+- Store the search run and reviewed candidate results.
+- Convert accepted reviewed results into active pages.
+- Store reviewer score, page type, reason, and accepted/rejected decision when available.
+- Expose requested topics and evaluated candidates publicly for observability.
 - Fall back to deterministic ranking when `OPENAI_API_KEY` is not configured.
 - AI summaries, quizzes, tagging, and quality review are future features, not MVP requirements.
 

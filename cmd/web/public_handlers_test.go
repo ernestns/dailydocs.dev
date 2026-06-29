@@ -292,7 +292,7 @@ func TestTopicSearchReturnsCaseInsensitivePartialMatches(t *testing.T) {
 	}
 }
 
-func TestTopicsPageListsAllActiveTopics(t *testing.T) {
+func TestTopicsPageListsRequestedTopicsWithStatus(t *testing.T) {
 	ctx := context.Background()
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
@@ -300,8 +300,11 @@ func TestTopicsPageListsAllActiveTopics(t *testing.T) {
 	importWebTopic(t, ctx, conn, "go", "Go")
 	importWebTopic(t, ctx, conn, "docker", "Docker")
 
-	if _, err := conn.ExecContext(ctx, "UPDATE topics SET status = 'disabled' WHERE slug = 'docker'"); err != nil {
-		t.Fatalf("disable topic: %v", err)
+	if _, err := conn.ExecContext(ctx, "UPDATE topics SET status = 'queued' WHERE slug = 'go'"); err != nil {
+		t.Fatalf("queue topic: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "UPDATE topics SET status = 'failed' WHERE slug = 'docker'"); err != nil {
+		t.Fatalf("fail topic: %v", err)
 	}
 
 	handler := newTestHandler(conn)
@@ -318,8 +321,63 @@ func TestTopicsPageListsAllActiveTopics(t *testing.T) {
 	if !strings.Contains(body, `href="/sqlite"`) {
 		t.Fatalf("expected sqlite topic link:\n%s", body)
 	}
-	if strings.Contains(body, `href="/docker"`) {
-		t.Fatalf("did not expect disabled docker topic:\n%s", body)
+	if !strings.Contains(body, `queued`) {
+		t.Fatalf("expected queued status:\n%s", body)
+	}
+	if !strings.Contains(body, `failed`) {
+		t.Fatalf("expected failed status:\n%s", body)
+	}
+	if !strings.Contains(body, `href="/topics/sqlite/evaluations"`) {
+		t.Fatalf("expected evaluations link:\n%s", body)
+	}
+}
+
+func TestTopicEvaluationsPageListsReviewedCandidates(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	importWebTopic(t, ctx, conn, "rust", "Rust")
+
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO topic_search_runs (topic_id, provider, query, status, result_count, stored_count)
+		VALUES (1, 'tavily', 'Rust concepts', 'completed', 2, 1)
+	`); err != nil {
+		t.Fatalf("seed search run: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO topic_search_results (
+			topic_id,
+			search_run_id,
+			title,
+			url,
+			source,
+			snippet,
+			rank,
+			reviewer_score,
+			page_type,
+			reviewer_reason,
+			accepted,
+			stored_as_page_id
+		)
+		VALUES
+			(1, 1, 'Generics', 'https://doc.rust-lang.org/stable/book/ch10-00-generics.html', 'doc.rust-lang.org', '', 1, 92, 'concept', 'Specific concept page.', 1, 1),
+			(1, 1, 'The Rust Book', 'https://doc.rust-lang.org/book', 'doc.rust-lang.org', '', 2, 40, 'landing', 'Too broad.', 0, NULL)
+	`); err != nil {
+		t.Fatalf("seed search results: %v", err)
+	}
+
+	handler := newTestHandler(conn)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/topics/rust/evaluations", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.Code)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{"Generics", "Accepted", "The Rust Book", "Rejected", "Too broad."} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in evaluations page:\n%s", expected, body)
+		}
 	}
 }
 

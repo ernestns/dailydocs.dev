@@ -183,13 +183,14 @@ Topic
   -> Search provider
   -> Normalize results
   -> Review candidates
+  -> Store evaluated candidates
   -> Store accepted pages
   -> Display daily reading
 ```
 
 Tavily is the preferred search provider.
 
-GPT-5 nano reviews candidate metadata when `OPENAI_API_KEY` is configured. The reviewer scores each candidate against the DailyDocs quality rubric and accepted pages are stored for the topic rotation.
+GPT-5 nano reviews candidate metadata when `OPENAI_API_KEY` is configured. The reviewer scores each candidate against the DailyDocs quality rubric. Every reviewed candidate is stored for observability, while only accepted candidates are stored as pages for the topic rotation.
 
 If model review is unavailable, DailyDocs falls back to deterministic ranking and filtering.
 
@@ -203,9 +204,22 @@ Stored search results must include:
 - result rank
 - reviewer score when available
 - page type when available
+- reviewer reason when available
+- accepted decision
 - date stored
 
 If the search provider is unavailable or returns no usable results, the topic remains visible as enqueued or failed rather than silently disappearing.
+
+### Public Observability
+
+DailyDocs publicly shows:
+
+- requested topics
+- topic status
+- accepted page count
+- evaluated candidate count
+- evaluated webpages for each topic
+- reviewer score, page type, reason, and accepted/rejected decision
 
 ## Functional Requirements
 
@@ -346,6 +360,7 @@ Unique constraint:
 - reviewer_score
 - page_type
 - reviewer_reason
+- accepted
 - stored_as_page_id
 - created_at
 

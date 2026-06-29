@@ -120,7 +120,7 @@ func TestSearchTopicFiltersLowValueResults(t *testing.T) {
 	}
 }
 
-func TestSearchTopicRanksInterestingPagesAheadOfGenericResults(t *testing.T) {
+func TestSearchTopicRanksSpecificPagesAheadOfGenericResults(t *testing.T) {
 	ctx := context.Background()
 	conn := openTopicSearchTestDB(t, ctx)
 	defer conn.Close()
@@ -130,7 +130,7 @@ func TestSearchTopicRanksInterestingPagesAheadOfGenericResults(t *testing.T) {
 			results: []SearchResult{
 				{Title: "Rust Programming Language", URL: "https://www.rust-lang.org/", Content: "Why Rust? Rust is fast and reliable.", Score: 0.95},
 				{Title: "Why Rust Docs Are the Gold Standard", URL: "https://medium.com/example/rust-docs", Content: "Every Rust library has documentation.", Score: 0.9},
-				{Title: "The Rust Programming Language Book", URL: "https://doc.rust-lang.org/book/", Content: "Learn Rust concepts with the official book.", Score: 0.8},
+				{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html", Content: "Generic types, traits, and lifetimes.", Score: 0.8},
 			},
 		},
 		Now:         fixedTopicSearchTime,
@@ -144,8 +144,8 @@ func TestSearchTopicRanksInterestingPagesAheadOfGenericResults(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, "SELECT title FROM pages WHERE reading_order = 1").Scan(&firstTitle); err != nil {
 		t.Fatalf("read first page: %v", err)
 	}
-	if firstTitle != "The Rust Programming Language Book" {
-		t.Fatalf("expected book first, got %q", firstTitle)
+	if firstTitle != "Generics" {
+		t.Fatalf("expected concept page first, got %q", firstTitle)
 	}
 }
 
@@ -157,15 +157,17 @@ func TestSearchTopicUsesReviewerToFilterResults(t *testing.T) {
 	_, err := SearchTopic(ctx, conn, "Rust", Options{
 		Provider: fakeProvider{
 			results: []SearchResult{
-				{Title: "Rust Book", URL: "https://doc.rust-lang.org/book/", Content: "Learn Rust concepts.", Score: 0.8},
+				{Title: "The Rust Programming Language", URL: "https://doc.rust-lang.org/book/", Content: "Learn Rust concepts.", Score: 0.8},
+				{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html", Content: "Generic types and traits.", Score: 0.7},
 				{Title: "Rust Listicle", URL: "https://example.com/best-rust-posts", Content: "A shallow list.", Score: 0.9},
 			},
 		},
 		Reviewer: fakeReviewer{
 			output: ReviewOutput{
 				Results: []ReviewResult{
-					{Index: 1, DailyDocsScore: 92, PageType: "guide", ShouldStore: true, Reason: "Strong conceptual guide."},
-					{Index: 2, DailyDocsScore: 25, PageType: "listicle", ShouldStore: false, Reason: "Shallow listicle."},
+					{Index: 1, DailyDocsScore: 88, PageType: "concept", ShouldStore: true, Reason: "Specific concept page."},
+					{Index: 2, DailyDocsScore: 92, PageType: "guide", ShouldStore: true, Reason: "Broad book."},
+					{Index: 3, DailyDocsScore: 25, PageType: "listicle", ShouldStore: false, Reason: "Shallow listicle."},
 				},
 				Model:        "gpt-5-nano-test",
 				InputTokens:  100,
@@ -188,13 +190,30 @@ func TestSearchTopicUsesReviewerToFilterResults(t *testing.T) {
 		t.Fatalf("expected one reviewed page, got %d", pageCount)
 	}
 
+	var evaluatedCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM topic_search_results").Scan(&evaluatedCount); err != nil {
+		t.Fatalf("count evaluated results: %v", err)
+	}
+	if evaluatedCount != 3 {
+		t.Fatalf("expected three evaluated results, got %d", evaluatedCount)
+	}
+
+	var broadAccepted int
+	if err := conn.QueryRowContext(ctx, "SELECT accepted FROM topic_search_results WHERE title = 'The Rust Programming Language'").Scan(&broadAccepted); err != nil {
+		t.Fatalf("read broad accepted flag: %v", err)
+	}
+	if broadAccepted != 0 {
+		t.Fatalf("expected broad book to be rejected, got accepted=%d", broadAccepted)
+	}
+
 	var score int
 	var pageType string
-	if err := conn.QueryRowContext(ctx, "SELECT reviewer_score, page_type FROM topic_search_results WHERE title = 'Rust Book'").Scan(&score, &pageType); err != nil {
+	var accepted int
+	if err := conn.QueryRowContext(ctx, "SELECT reviewer_score, page_type, accepted FROM topic_search_results WHERE title = 'Generics'").Scan(&score, &pageType, &accepted); err != nil {
 		t.Fatalf("read review metadata: %v", err)
 	}
-	if score != 92 || pageType != "guide" {
-		t.Fatalf("unexpected review metadata score=%d page_type=%q", score, pageType)
+	if score != 88 || pageType != "concept" || accepted != 1 {
+		t.Fatalf("unexpected review metadata score=%d page_type=%q accepted=%d", score, pageType, accepted)
 	}
 
 	var model string
