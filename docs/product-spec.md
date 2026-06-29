@@ -4,9 +4,9 @@ Version: 0.1 (MVP)
 
 ## Vision
 
-DailyDocs recommends one documentation link per topic per day.
+DailyDocs helps individuals and teams increase their depth of knowledge by reading for a few minutes each day.
 
-Instead of searching for something to read, users receive one documentation link for a topic they care about.
+Each reading teaches something new about a topic they care about and is sourced from official documentation whenever possible.
 
 A DailyDocs reading is simply a URL.
 
@@ -64,7 +64,16 @@ The URL is the reading.
 
 The application recommends documentation links selected from known documentation sources.
 
-The catalog should stay small unless additional links improve the daily reading experience.
+Each topic should have a small catalog of roughly 10 to 50 high-quality documentation links. More links are only useful when they improve the daily reading experience.
+
+Identifying high-quality documentation is the central product challenge.
+
+Quality signals include:
+
+- Foundational: understanding this unlocks many other topics.
+- Practical impact: the knowledge improves how people build or debug real systems.
+- Canonicality: the source is authoritative or widely accepted.
+- Uniqueness: the page provides insight that is not repeated everywhere else.
 
 ### Official First
 
@@ -150,9 +159,10 @@ Each topic has a stable reading order.
 During import:
 
 1. Discover documentation pages
-2. Filter poor candidates
-3. Shuffle once
-4. Store reading order
+2. Extract metadata
+3. Review quality
+4. Filter poor candidates
+5. Store reading order
 
 Example:
 
@@ -203,6 +213,7 @@ Display:
 The importer is a separate command mode in the DailyDocs binary.
 
 Purpose: turn a topic into a reading list.
+The target output is 10 to 50 high-quality documentation links for a topic, not an exhaustive mirror of the documentation site.
 
 Example:
 
@@ -214,7 +225,7 @@ Import "SQLite"
   -> Remove duplicates
   -> Estimate reading time
   -> Assign metadata
-  -> Shuffle reading order
+  -> Review quality
   -> Store
 ```
 
@@ -263,31 +274,29 @@ submitted documentation URL
   -> discover candidate documentation pages
   -> crawl pages
   -> extract structured metadata
-  -> classify with deterministic heuristics
-  -> score with explainable rules
+  -> review quality
   -> filter low-scoring pages
   -> deduplicate URLs and canonicals
   -> persist eligible candidates
 ```
 
-The initial pipeline does not use AI. It should be deterministic and idempotent so the same documentation homepage can be processed repeatedly without duplicating candidates.
+The pipeline should be deterministic and idempotent around discovery, extraction, deduplication, and persistence so the same documentation homepage can be processed repeatedly without duplicating candidates.
 
-AI review may be added later as an optional classification or scoring layer.
+Quality review uses page metadata and bounded excerpts. The reviewer should favor pages that are foundational, practically useful, canonical, and unique.
 
 Candidate pages should be persisted before activation. A separate activation step can promote eligible candidates into active `pages`.
 
-Initial deterministic stages:
+Initial bounded stages:
 
 1. Discover candidate URLs from sitemap.xml, robots.txt sitemap declarations, navigation menus, sidebars, breadcrumbs, and internal documentation links.
 2. Normalize, scope-check, and deduplicate the crawl frontier before fetching.
 3. Crawl candidate URLs and keep URL, HTML, HTTP status, and headers in memory for extraction.
 4. Extract title, H1, headings, plain text, word count, links, canonical URL, and meta description.
-5. Classify pages using deterministic heuristics.
-6. Apply hard exclusions before scoring.
-7. Score remaining pages with explainable score components.
-8. Filter pages below the minimum score.
-9. Deduplicate redirects, normalized URLs, and trusted canonical URLs.
-10. Persist eligible candidates.
+5. Apply hard exclusions before review.
+6. Review page quality.
+7. Filter pages below the minimum score.
+8. Deduplicate redirects, normalized URLs, and trusted canonical URLs.
+9. Persist eligible candidates.
 
 Default crawl policy:
 
@@ -316,7 +325,7 @@ Hard exclusions:
 - search pages
 - tag/category index pages
 
-Possible classifications:
+Possible page types:
 
 - Tutorial
 - Guide
@@ -330,17 +339,12 @@ Possible classifications:
 - Archive
 - Other
 
-Example scoring:
+Quality rubric:
 
-- `+50` official documentation
-- `+20` tutorial, guide, or concept
-- `+15` between 500 and 3000 words
-- `+10` meaningful headings
-- `-40` release notes
-- `-40` migration guide
-- `-30` archive
-- `-20` generated API reference
-- `-10` very short page
+- Foundational: does understanding this unlock many other topics?
+- Practical impact: will this knowledge improve how people build or debug real systems?
+- Canonicality: is this the authoritative or widely accepted source?
+- Uniqueness: does it provide insights that are not repeated elsewhere?
 
 Example threshold:
 
@@ -391,7 +395,6 @@ Responsibilities:
 Technology:
 
 - Go
-- Datastar
 - SQLite
 - Caddy
 
@@ -633,15 +636,13 @@ Recovery should be documented and tested before scheduled processing becomes imp
 - Reading history
 - Read status
 - Comments
-- Documentation source discovery
-- Protected admin pipeline UI
 - Page deactivation
 - Topic and page metadata editing
 - User feedback on pending submissions and active readings
 - Moderation
 - Optional AI summaries, quizzes, difficulty estimation, or tagging
 
-AI is never required for the core experience.
+AI-generated reading summaries, quizzes, and tagging are not required for the core reading experience.
 
 ## Success Metrics
 

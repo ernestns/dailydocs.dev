@@ -26,22 +26,27 @@ Completed:
 13. Topic index page
 14. Missing-topic submission fallback
 15. Topic lookup combobox
+16. Protected admin UI
+17. Topic sources and source lifecycle statuses
+18. Source discovery preview and discovery history
+19. Candidate filters and pipeline telemetry in admin
+20. Admin source action guardrails
+21. Duplicate-submit protection
 
 Next:
 
-16. Minimal protected admin UI
+22. Improve the quality review loop for candidate documentation pages
 
 Backlog:
 
 - Feedback and moderation
 - Deactivate active pages
 - Edit active topic and page metadata
-- Optional AI review layer
 - Scheduled offsite backups
 
 ## Step Zero: Public Hello World
 
-Before adding SQLite, Datastar, migrations, importer logic, or topic routes, prove the deployment path with the smallest useful Go application.
+Before adding SQLite, migrations, importer logic, or topic routes, prove the deployment path with the smallest useful Go application.
 
 Bare minimum repository pieces:
 
@@ -71,7 +76,7 @@ Definition of done:
 - the app runs under systemd or an equivalent supervisor
 - the repository documents enough steps to rebuild the deployment on a fresh VPS
 
-Do not include SQLite, Datastar, migrations, importer commands, validator logic, or topic routes in this milestone.
+Do not include SQLite, migrations, importer commands, validator logic, or topic routes in this milestone.
 
 ## Core Domain First
 
@@ -163,13 +168,13 @@ The topic/date route is the stable archive URL:
 
 The homepage shows the topic picker and can send the user to the topic-only URL for the selected topic.
 
-## Datastar Scope
+## UI Scope
 
-Use Datastar modestly for:
+Use server-rendered Go templates with small, targeted JavaScript for interactions such as:
 
 - autocomplete
 - selecting one topic
-- generating the bookmarkable URL
+- submit locking
 
 Do not turn the app into a complex single-page application. The URL is the state.
 
@@ -207,7 +212,7 @@ search missing topic
   -> optional topic name
   -> submission appears in public queue
   -> processing pipeline discovers candidate pages
-  -> deterministic extraction, classification, scoring, filtering, and deduplication
+  -> extraction, quality review, filtering, and deduplication
   -> eligible candidates can be activated
 ```
 
@@ -233,13 +238,22 @@ Definition of done:
 
 The first processing pipeline should persist candidates, not every intermediate crawl artifact.
 
+The target output for each topic is roughly 10 to 50 high-quality documentation links. The pipeline should not try to mirror full documentation sites.
+
+The current product challenge is identifying quality. Useful signals:
+
+- Foundational: understanding this unlocks many other topics.
+- Practical impact: the knowledge improves how people build or debug real systems.
+- Canonicality: the source is authoritative or widely accepted.
+- Uniqueness: the page provides insight that is not repeated everywhere else.
+
 Command:
 
 ```sh
 dailydocs process-submission <submission-id>
 ```
 
-The pipeline is deterministic and does not use AI.
+The pipeline should be deterministic around discovery, extraction, deduplication, persistence, and reruns. Quality review can use model output, but it should operate on bounded metadata and excerpts rather than unbounded crawling or source discovery.
 
 Pipeline:
 
@@ -248,8 +262,7 @@ submitted
   -> discovering
   -> crawling
   -> extracting
-  -> classifying
-  -> scoring
+  -> reviewing quality
   -> filtering
   -> deduplicating
   -> persist page_candidates
@@ -263,12 +276,11 @@ Initial stages:
 2. Normalize, scope-check, and deduplicate the crawl frontier before fetching.
 3. Crawl candidate URLs and keep URL, HTML, HTTP status, and headers in memory for extraction.
 4. Extract title, H1, headings, plain text, word count, links, canonical URL, and meta description.
-5. Classify with deterministic heuristics.
-6. Apply hard exclusions before scoring.
-7. Score remaining pages with explainable score components.
-8. Filter pages below the minimum score.
-9. Deduplicate redirects, normalized URLs, and trusted canonical URLs.
-10. Persist eligible candidates to `page_candidates`.
+5. Apply hard exclusions before review.
+6. Review page quality.
+7. Filter pages below the minimum score.
+8. Deduplicate redirects, normalized URLs, and trusted canonical URLs.
+9. Persist eligible candidates to `page_candidates`.
 ```
 
 The pipeline must be bounded:
@@ -286,7 +298,7 @@ The pipeline must be bounded:
 - respect robots.txt disallow rules
 - extract sitemap declarations from robots.txt
 
-The first implementation should not use AI. AI classification or scoring may replace or augment deterministic heuristics later.
+Quality review uses page metadata and bounded excerpts. Discovery, extraction, deduplication, and persistence should remain deterministic and idempotent.
 
 Candidate activation should be a separate step from processing so candidates can be inspected before becoming active pages.
 
@@ -330,8 +342,7 @@ Definition of done:
 - Normalize, scope-check, and deduplicate the frontier in memory before fetching.
 - Crawl bounded candidate pages.
 - Extract structured metadata.
-- Classify with deterministic heuristics.
-- Score with explainable score components.
+- Review page quality from metadata and bounded excerpts.
 - Filter by minimum score.
 - Deduplicate normalized URLs and canonical URLs.
 - Persist eligible candidates.
@@ -547,21 +558,30 @@ Backlog scope:
 - define retention for daily, weekly, and monthly backups
 - document how to inspect timer logs and restore from an uploaded backup
 
-## Backlog: Optional AI Review Layer
+## Next: Quality Review Loop
 
-AI can later augment deterministic classification or scoring, but should not be foundational to the first pipeline.
+The next pipeline work should improve how DailyDocs identifies high-quality documentation pages.
 
-Good AI boundary:
+Good review boundary:
 
 ```text
 candidate metadata + bounded excerpt -> structured review decision
 ```
 
-Bad AI boundary:
+Bad review boundary:
 
 ```text
 find all good docs for this topic
 ```
+
+Quality review should prioritize:
+
+- foundational pages
+- practical impact
+- canonical sources
+- unique insight
+
+The admin UI should make accepted and rejected candidates easy to compare so the rubric can be tuned from real examples.
 
 Definition of done is intentionally deferred.
 
