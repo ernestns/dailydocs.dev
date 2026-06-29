@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -25,8 +24,8 @@ func TestHomePageListsTopics(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `href="/sqlite"`) {
 		t.Fatalf("expected sqlite topic link in home page:\n%s", response.Body.String())
 	}
-	if strings.Contains(response.Body.String(), `>Submit documentation</a>`) {
-		t.Fatalf("did not expect static submit documentation link on home page:\n%s", response.Body.String())
+	if strings.Contains(response.Body.String(), `Submit documentation`) {
+		t.Fatalf("did not expect documentation submission copy on home page:\n%s", response.Body.String())
 	}
 }
 
@@ -52,6 +51,7 @@ func TestHomePageRendersTopicCombobox(t *testing.T) {
 		`id="topic-results"`,
 		`ArrowDown`,
 		`aria-activedescendant`,
+		`Request Topic`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in home page:\n%s", expected, body)
@@ -98,7 +98,7 @@ func TestGenerateReadingRedirectsTopicNameToTopicURL(t *testing.T) {
 	}
 }
 
-func TestGenerateReadingRedirectsMissingTopicToSubmission(t *testing.T) {
+func TestGenerateReadingQueuesMissingTopic(t *testing.T) {
 	ctx := context.Background()
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
@@ -110,8 +110,37 @@ func TestGenerateReadingRedirectsMissingTopicToSubmission(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", response.Code)
 	}
-	if location := response.Header().Get("Location"); location != "/submissions?topic=Rust" {
-		t.Fatalf("expected redirect to /submissions?topic=Rust, got %q", location)
+	if location := response.Header().Get("Location"); location != "/rust" {
+		t.Fatalf("expected redirect to /rust, got %q", location)
+	}
+
+	var status string
+	if err := conn.QueryRowContext(ctx, "SELECT status FROM topics WHERE slug = 'rust'").Scan(&status); err != nil {
+		t.Fatalf("read queued topic: %v", err)
+	}
+	if status != "queued" {
+		t.Fatalf("expected queued topic, got %q", status)
+	}
+}
+
+func TestMissingTopicPageShowsQueuedState(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+
+	handler := newTestHandler(conn)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Rust") {
+		t.Fatalf("expected topic name in queued page:\n%s", body)
+	}
+	if !strings.Contains(body, "queued") {
+		t.Fatalf("expected queued state in body:\n%s", body)
 	}
 }
 
@@ -135,8 +164,8 @@ func TestReadingPageUsesTodayForTopicOnlyURL(t *testing.T) {
 	if !strings.Contains(body, "Write-Ahead Logging") {
 		t.Fatalf("expected reading title in body:\n%s", body)
 	}
-	if !strings.Contains(body, `href="/submissions?topic=SQLite"`) {
-		t.Fatalf("expected source suggestion link:\n%s", body)
+	if strings.Contains(body, `/submissions`) {
+		t.Fatalf("did not expect submission link:\n%s", body)
 	}
 }
 
@@ -247,246 +276,5 @@ func TestTopicsPageRequiresGet(t *testing.T) {
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", response.Code)
-	}
-}
-
-func TestSubmissionsPageIsNoindexed(t *testing.T) {
-	ctx := context.Background()
-	conn := openWebTestDB(t, ctx)
-	defer conn.Close()
-
-	handler := newTestHandler(conn)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/submissions", nil))
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", response.Code)
-	}
-	body := response.Body.String()
-	if !strings.Contains(body, `<meta name="robots" content="noindex">`) {
-		t.Fatalf("expected noindex meta tag:\n%s", body)
-	}
-	if !strings.Contains(body, "Documentation URL") {
-		t.Fatalf("expected submission form:\n%s", body)
-	}
-	if !strings.Contains(body, "Submit a documentation source URL for a new or existing topic.") {
-		t.Fatalf("expected source submission copy:\n%s", body)
-	}
-}
-
-func TestSubmissionsPagePrefillsTopic(t *testing.T) {
-	ctx := context.Background()
-	conn := openWebTestDB(t, ctx)
-	defer conn.Close()
-
-	handler := newTestHandler(conn)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/submissions?topic=Rust", nil))
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", response.Code)
-	}
-	if !strings.Contains(response.Body.String(), `value="Rust"`) {
-		t.Fatalf("expected prefilled topic:\n%s", response.Body.String())
-	}
-}
-
-func TestCreateSubmissionRedirectsAndStoresSubmission(t *testing.T) {
-	ctx := context.Background()
-	conn := openWebTestDB(t, ctx)
-	defer conn.Close()
-
-	form := url.Values{}
-	form.Set("url", "https://SQLite.org/docs.html#top")
-	form.Set("topic", "SQLite")
-
-	handler := newTestHandler(conn)
-	request := httptest.NewRequest(http.MethodPost, "/submissions", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.RemoteAddr = "203.0.113.1:12345"
-	response := httptest.NewRecorder()
-
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("expected 303, got %d: %s", response.Code, response.Body.String())
-	}
-	if location := response.Header().Get("Location"); location != "/submissions" {
-		t.Fatalf("expected redirect to /submissions, got %q", location)
-	}
-
-	var normalizedURL, sourceHost, suggestedTopic string
-	var requestCount int
-	if err := conn.QueryRowContext(ctx, `
-		SELECT normalized_url, source_host, suggested_topic, request_count
-		FROM documentation_submissions
-	`).Scan(&normalizedURL, &sourceHost, &suggestedTopic, &requestCount); err != nil {
-		t.Fatalf("read submission: %v", err)
-	}
-	if normalizedURL != "https://sqlite.org/docs.html" {
-		t.Fatalf("expected normalized url, got %q", normalizedURL)
-	}
-	if sourceHost != "sqlite.org" {
-		t.Fatalf("expected source host sqlite.org, got %q", sourceHost)
-	}
-	if suggestedTopic != "SQLite" {
-		t.Fatalf("expected suggested topic SQLite, got %q", suggestedTopic)
-	}
-	if requestCount != 1 {
-		t.Fatalf("expected request count 1, got %d", requestCount)
-	}
-}
-
-func TestCreateSubmissionForExistingTopicCreatesSourceAndDiscoveryPreview(t *testing.T) {
-	ctx := context.Background()
-	conn := openWebTestDB(t, ctx)
-	defer conn.Close()
-	importWebTopic(t, ctx, conn, "rust", "Rust")
-
-	server := adminDocsServer()
-	defer server.Close()
-
-	form := url.Values{}
-	form.Set("url", server.URL+"/docs")
-	form.Set("topic", "Rust")
-
-	handler := newTestHandler(conn)
-	request := httptest.NewRequest(http.MethodPost, "/submissions", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
-
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("expected 303, got %d: %s", response.Code, response.Body.String())
-	}
-
-	var sourceID int64
-	var discoveryCount int
-	var discoverySample string
-	var createdFrom int64
-	if err := conn.QueryRowContext(ctx, `
-		SELECT ts.id, ts.discovery_count, ts.discovery_sample, COALESCE(ts.created_from_submission_id, 0)
-		FROM topic_sources ts
-		JOIN topics t ON t.id = ts.topic_id
-		WHERE t.slug = 'rust'
-	`).Scan(&sourceID, &discoveryCount, &discoverySample, &createdFrom); err != nil {
-		t.Fatalf("read auto-created source: %v", err)
-	}
-	if sourceID < 1 {
-		t.Fatalf("expected source id")
-	}
-	if discoveryCount == 0 {
-		t.Fatalf("expected discovery preview count")
-	}
-	if !strings.Contains(discoverySample, "/docs/ownership") {
-		t.Fatalf("expected discovered ownership URL, got %q", discoverySample)
-	}
-	if createdFrom == 0 {
-		t.Fatalf("expected source to be linked to submission")
-	}
-
-	var runCount int
-	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pipeline_runs WHERE topic_source_id = ?", sourceID).Scan(&runCount); err != nil {
-		t.Fatalf("count source runs: %v", err)
-	}
-	if runCount != 0 {
-		t.Fatalf("expected auto discovery not to create pipeline runs, got %d", runCount)
-	}
-}
-
-func TestCreateSubmissionForNewTopicCreatesSourceAndDiscoveryPreview(t *testing.T) {
-	ctx := context.Background()
-	conn := openWebTestDB(t, ctx)
-	defer conn.Close()
-
-	server := adminDocsServer()
-	defer server.Close()
-
-	form := url.Values{}
-	form.Set("url", server.URL+"/docs")
-	form.Set("topic", "Rust")
-
-	handler := newTestHandler(conn)
-	request := httptest.NewRequest(http.MethodPost, "/submissions", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
-
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("expected 303, got %d: %s", response.Code, response.Body.String())
-	}
-
-	var sourceID int64
-	var discoveryCount int
-	var discoverySample string
-	var createdFrom int64
-	if err := conn.QueryRowContext(ctx, `
-		SELECT ts.id, ts.discovery_count, ts.discovery_sample, COALESCE(ts.created_from_submission_id, 0)
-		FROM topic_sources ts
-		JOIN topics t ON t.id = ts.topic_id
-		WHERE t.slug = 'rust'
-	`).Scan(&sourceID, &discoveryCount, &discoverySample, &createdFrom); err != nil {
-		t.Fatalf("read auto-created source: %v", err)
-	}
-	if sourceID < 1 {
-		t.Fatalf("expected source id")
-	}
-	if discoveryCount == 0 {
-		t.Fatalf("expected discovery preview count")
-	}
-	if !strings.Contains(discoverySample, "/docs/ownership") {
-		t.Fatalf("expected discovered ownership URL, got %q", discoverySample)
-	}
-	if createdFrom == 0 {
-		t.Fatalf("expected source to be linked to submission")
-	}
-
-	var historyCount int
-	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM source_discovery_runs WHERE topic_source_id = ?", sourceID).Scan(&historyCount); err != nil {
-		t.Fatalf("count discovery history: %v", err)
-	}
-	if historyCount != 1 {
-		t.Fatalf("expected one discovery history row, got %d", historyCount)
-	}
-}
-
-func TestSubmissionsPageShowsSafePublicFields(t *testing.T) {
-	ctx := context.Background()
-	conn := openWebTestDB(t, ctx)
-	defer conn.Close()
-
-	server := adminDocsServer()
-	defer server.Close()
-
-	form := url.Values{}
-	form.Set("url", server.URL+"/docs")
-	form.Set("topic", "Go")
-
-	handler := newTestHandler(conn)
-	request := httptest.NewRequest(http.MethodPost, "/submissions", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	handler.ServeHTTP(httptest.NewRecorder(), request)
-
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/submissions", nil))
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", response.Code)
-	}
-	body := response.Body.String()
-	serverHost := strings.TrimPrefix(server.URL, "http://")
-	if !strings.Contains(body, serverHost) {
-		t.Fatalf("expected source host in queue:\n%s", body)
-	}
-	if !strings.Contains(body, "Go") {
-		t.Fatalf("expected suggested topic in queue:\n%s", body)
-	}
-	if !strings.Contains(body, "Discovered") {
-		t.Fatalf("expected public status label in queue:\n%s", body)
-	}
-	if strings.Contains(body, server.URL+"/docs") {
-		t.Fatalf("did not expect raw submitted URL in public queue:\n%s", body)
 	}
 }

@@ -4,11 +4,20 @@
 
 Implement DailyDocs in thin vertical slices.
 
-The core product risk is not rendering a reading page. The core risk is incorrect, stale, or broken links.
+The core product risk is not rendering a reading page. The core risk is whether a requested topic can quickly produce useful documentation links.
 
-## Implementation Order
+The current MVP pipeline is:
 
-Completed:
+```text
+Topic
+  -> Search
+  -> Store
+  -> Display
+```
+
+No manual activation gate is required for the MVP.
+
+## Completed
 
 0. Public hello-world Go app
 1. SQLite schema and migrations
@@ -18,8 +27,8 @@ Completed:
 5. Topic search and reading URL generation UI
 6. Link validator
 7. Backup and restore scripts
-8. Documentation submission queue
-9. Minimal candidate pipeline
+8. Documentation URL submission queue
+9. Candidate discovery pipeline
 10. Manual activation
 11. Queue runner
 12. Pipeline inspection commands
@@ -33,74 +42,32 @@ Completed:
 20. Admin source action guardrails
 21. Duplicate-submit protection
 
-Next:
+These completed items reflect the first pipeline direction. The architecture has since been simplified. Existing code can be removed or retired as the new topic-search flow replaces it.
 
-22. Improve the quality review loop for candidate documentation pages
+## Next
 
-Backlog:
+22. Add topic request records and statuses.
+23. Add Tavily search provider integration.
+24. Store search runs and search results.
+25. Convert stored search results into active pages.
+26. Trigger topic search inline when a missing topic is requested.
+27. Show queued/searching/failed topic states in the reader UI.
+28. Add global search throttling: one search at a time, at most once every five minutes.
+29. Remove retired documentation URL submission, source, candidate, GPT review, and admin activation paths.
 
-- Feedback and moderation
+## Backlog
+
+- User feedback on active readings
 - Deactivate active pages
 - Edit active topic and page metadata
 - Scheduled offsite backups
+- Search provider fallback
+- Better result quality review
+- Abuse controls beyond the initial global rate limit
 
-## Step Zero: Public Hello World
+## Core Domain
 
-Before adding SQLite, migrations, importer logic, or topic routes, prove the deployment path with the smallest useful Go application.
-
-Bare minimum repository pieces:
-
-- `go.mod`
-- `cmd/web/main.go`
-- `scripts/build.sh` or documented build commands
-- deployment notes for systemd and Caddy
-
-Initial routes:
-
-```text
-GET /        returns a simple DailyDocs page
-GET /health  returns ok
-```
-
-Initial configuration:
-
-```text
-ADDR=:8080
-```
-
-Definition of done:
-
-- `https://dailydocs.dev` loads publicly
-- `https://dailydocs.dev/health` returns `ok`
-- Caddy terminates TLS and proxies to the Go app
-- the app runs under systemd or an equivalent supervisor
-- the repository documents enough steps to rebuild the deployment on a fresh VPS
-
-Do not include SQLite, migrations, importer commands, validator logic, or topic routes in this milestone.
-
-## Core Domain First
-
-Define the database and selection rules before building much UI.
-
-Initial tables:
-
-- `topics`
-- `pages`
-- `daily_readings`
-- `imports`
-- `schema_migrations`
-
-Key constraints:
-
-- `topics.slug` is unique
-- `pages(topic_id, url)` is unique
-- `daily_readings(topic_id, reading_date)` is unique
-- only active pages are eligible for new readings
-- historical `daily_readings` rows are preserved
-
-## Daily Assignment
-
-The web app should have one core domain operation:
+The web app has one core reader operation:
 
 ```text
 GetDailyReading(topic, date) -> page
@@ -114,32 +81,97 @@ Behavior:
 4. Insert the assignment.
 5. Return the assigned page.
 
-This logic should be heavily tested because it is the product.
+This logic should stay heavily tested because it is the product.
 
-## Seed Data Before Automation
+## Topic Request Flow
 
-Do not begin with a complex crawler.
+When a user requests an existing topic:
 
-Start with a simple human-readable import format:
-
-```yaml
-topic: sqlite
-name: SQLite
-pages:
-  - title: Write-Ahead Logging
-    url: https://sqlite.org/wal.html
-    source: SQLite Documentation
-    official: true
-    estimated_minutes: 12
+```text
+GET /{topic}
+  -> find active topic
+  -> get or create today's daily reading
+  -> render reading page
 ```
 
-Build a command:
+When a user requests a missing topic:
 
-```sh
-dailydocs import-file topics/sqlite.yaml
+```text
+GET /{topic}
+  -> create queued topic
+  -> show queued state
+  -> if global throttle allows, search immediately
+  -> store results as pages
+  -> render reading page if pages now exist
 ```
 
-This lets the product launch with documentation links immediately. Documentation submission processing can follow after the shape of good data is clearer.
+The UI should make it clear that the request is enqueued even when search begins inline.
+
+## Search Pipeline
+
+Initial pipeline:
+
+```text
+topic name
+  -> Tavily search
+  -> normalize result URLs
+  -> deduplicate by topic and URL
+  -> store search run
+  -> store search results
+  -> create active pages
+```
+
+Tavily query goals:
+
+- prefer official documentation
+- prefer standalone documentation pages
+- avoid generic marketing pages when possible
+- return enough results to seed the first daily rotation
+
+The MVP does not use GPT or manual review in the pipeline.
+
+## Search Limits
+
+Initial limits:
+
+- one topic search at a time globally
+- at most one topic search every five minutes
+- bounded provider timeout
+- bounded provider result count
+
+If the limit is active, the missing topic remains queued and can be searched by a later request or command.
+
+## Data Model Changes
+
+Add or adapt tables for:
+
+- `topics`
+- `pages`
+- `daily_readings`
+- `topic_search_runs`
+- `topic_search_results`
+
+Suggested `topics.status` values:
+
+- `active`
+- `queued`
+- `searching`
+- `failed`
+
+Suggested `topic_search_runs.status` values:
+
+- `running`
+- `completed`
+- `failed`
+- `rate_limited`
+
+`pages` should keep enough provenance to know whether a page came from search:
+
+- source
+- discovered_at
+- search_run_id or equivalent provenance field
+
+Historical `daily_readings` rows must not be deleted.
 
 ## Web Application
 
@@ -149,9 +181,10 @@ Routes:
 
 ```text
 GET /                         topic picker
-GET /{topic}                  today's reading page
+GET /{topic}                  today's reading page or queued state
 GET /{topic}/{date}           daily reading page
 GET /topics/search?q=go       autocomplete endpoint
+GET /topics                   topic index
 ```
 
 The topic-only route is the common product URL:
@@ -166,21 +199,15 @@ The topic/date route is the stable archive URL:
 /sqlite/2026-06-26
 ```
 
-The homepage shows the topic picker and can send the user to the topic-only URL for the selected topic.
+The URL is the reader state.
 
 ## UI Scope
 
-Use server-rendered Go templates with small, targeted JavaScript for interactions such as:
+Use server-rendered Go templates with small, targeted JavaScript for interactions such as autocomplete, selecting one topic, and submit locking.
 
-- autocomplete
-- selecting one topic
-- submit locking
-
-Do not turn the app into a complex single-page application. The URL is the state.
+Do not turn the app into a complex single-page application.
 
 ## Link Validator
-
-The validator is more important than the automated importer.
 
 Command:
 
@@ -196,394 +223,21 @@ Responsibilities:
 - update `last_verified`
 - optionally propose URL updates
 
-Broken links should be detected before broad importer automation.
+Broken links should be detected before broad traffic depends on a topic.
 
-## Documentation Submission Queue
+## Operational Commands
 
-This replaces the older idea of starting from a topic-only discovery command.
+Keep operational commands small and explicit.
 
-The lower-friction user action is submitting a documentation URL, not manually naming a topic. Topic name can be optional and inferred from the submitted source.
-
-User flow:
-
-```text
-search missing topic
-  -> submit documentation URL
-  -> optional topic name
-  -> submission appears in public queue
-  -> processing pipeline discovers candidate pages
-  -> extraction, quality review, filtering, and deduplication
-  -> eligible candidates can be activated
-```
-
-Definition of done:
-
-- Add `documentation_submissions` migration.
-- Let users submit a documentation homepage URL.
-- Let users optionally provide a topic name.
-- Normalize and deduplicate submitted URLs.
-- Increment `request_count` for duplicate submissions.
-- Show a public `/submissions` queue page.
-- Add `noindex` to `/submissions`.
-- Show only source host, suggested topic, status, request count, and last submitted time publicly.
-- Keep raw errors, rejected URLs, score components, and internal debug data out of public pages.
-- Accept only `http` and `https`.
-- Store `submitter_ip_hash` for rate limiting.
-- Include basic bot friction such as a honeypot field.
-- Make submitted URLs non-clickable until processed.
-- Do not crawl, process, create topics, or activate pages yet.
-- Add tests for URL validation, deduplication, request counts, and public queue rendering.
-
-## Minimal Candidate Pipeline
-
-The first processing pipeline should persist candidates, not every intermediate crawl artifact.
-
-The target output for each topic is roughly 10 to 50 high-quality documentation links. The pipeline should not try to mirror full documentation sites.
-
-The current product challenge is identifying quality. Useful signals:
-
-- Foundational: understanding this unlocks many other topics.
-- Practical impact: the knowledge improves how people build or debug real systems.
-- Canonicality: the source is authoritative or widely accepted.
-- Uniqueness: the page provides insight that is not repeated everywhere else.
-
-Command:
+Useful commands:
 
 ```sh
-dailydocs process-submission <submission-id>
+dailydocs import-file topics/sqlite.yaml
+dailydocs validate-links
+dailydocs search-topic rust
 ```
 
-The pipeline should be deterministic around discovery, extraction, deduplication, persistence, and reruns. Quality review can use model output, but it should operate on bounded metadata and excerpts rather than unbounded crawling or source discovery.
-
-Pipeline:
-
-```text
-submitted
-  -> discovering
-  -> crawling
-  -> extracting
-  -> reviewing quality
-  -> filtering
-  -> deduplicating
-  -> persist page_candidates
-  -> candidates_ready | failed
-```
-
-Initial stages:
-
-```text
-1. Discover candidate URLs from sitemap.xml, robots.txt sitemap declarations, navigation menus, sidebars, breadcrumbs, and internal documentation links.
-2. Normalize, scope-check, and deduplicate the crawl frontier before fetching.
-3. Crawl candidate URLs and keep URL, HTML, HTTP status, and headers in memory for extraction.
-4. Extract title, H1, headings, plain text, word count, links, canonical URL, and meta description.
-5. Apply hard exclusions before review.
-6. Review page quality.
-7. Filter pages below the minimum score.
-8. Deduplicate redirects, normalized URLs, and trusted canonical URLs.
-9. Persist eligible candidates to `page_candidates`.
-```
-
-The pipeline must be bounded:
-
-- same host only by default
-- submitted path prefix by default
-- strip fragments
-- drop query strings unless allowlisted
-- max pages: 250
-- max depth: 3
-- max bytes per page: 2 MB
-- request timeout: 10 seconds
-- concurrency: 1 per host
-- per-host delay
-- respect robots.txt disallow rules
-- extract sitemap declarations from robots.txt
-
-Quality review uses page metadata and bounded excerpts. Discovery, extraction, deduplication, and persistence should remain deterministic and idempotent.
-
-Candidate activation should be a separate step from processing so candidates can be inspected before becoming active pages.
-
-Canonical URL rule:
-
-```text
-Trust canonical URLs only when they stay inside the allowed host and path scope.
-Otherwise use the final fetched URL as the candidate identity.
-```
-
-Hard exclusions before scoring:
-
-- non-HTML responses
-- login-required pages
-- release notes
-- archive pages
-- changelogs
-- download pages
-- search pages
-- tag/category index pages
-
-Failure statuses should be structured per URL:
-
-- robots_disallowed
-- out_of_scope
-- timeout
-- too_large
-- unsupported_content_type
-- http_error
-- redirect_out_of_scope
-- parse_failed
-- duplicate_normalized_url
-- duplicate_canonical_url
-
-Definition of done:
-
-- Add `pipeline_runs`.
-- Add `page_candidates`.
-- Do not add `raw_documents` or `discovered_urls` tables yet.
-- Discover candidate URLs from the submitted documentation homepage.
-- Normalize, scope-check, and deduplicate the frontier in memory before fetching.
-- Crawl bounded candidate pages.
-- Extract structured metadata.
-- Review page quality from metadata and bounded excerpts.
-- Filter by minimum score.
-- Deduplicate normalized URLs and canonical URLs.
-- Persist eligible candidates.
-- Persist run summary and bounded error summaries on `pipeline_runs`.
-- Discard raw HTML after extraction.
-- Make reruns idempotent.
-- Do not activate candidates.
-- Add tests for each stage using local test servers and fixtures.
-
-Required uniqueness/idempotency constraints:
-
-```text
-documentation_submissions(normalized_url)
-page_candidates(documentation_submission_id, normalized_url)
-page_candidates(documentation_submission_id, canonical_url) where canonical_url is present
-pages(topic_id, url)
-```
-
-## Manual Activation
-
-Manual activation promotes eligible `page_candidates` into active `pages`.
-
-Command:
-
-```sh
-dailydocs activate-candidates <submission-id>
-```
-
-Definition of done:
-
-- Activate eligible candidates into `pages`.
-- Preserve existing page IDs when possible.
-- Do not mutate historical `daily_readings`.
-- Keep rejected or low-scoring candidates out of active pages.
-- Create a topic if needed.
-- Resolve topic slug conflicts explicitly.
-- Assign `reading_order` deterministically.
-- Prefer all-or-nothing activation per submission.
-- Update existing pages by URL, deactivate omitted pages only when explicitly requested.
-- Store provenance from page to candidate and pipeline run on `pages`.
-- Add tests for idempotency and page preservation.
-
-## Queue Runner
-
-The first queue runner should be a one-off batch command, not a long-running worker. It should be tested locally first, then run manually in production. Production scheduling waits until manual production runs are stable.
-
-Command:
-
-```sh
-dailydocs process-pending-submissions --limit 5
-```
-
-Definition of done:
-
-- Find pending submissions.
-- Claim one submission at a time using a lease.
-- Run `process-submission`.
-- Mark success or failure.
-- Continue up to the limit.
-- Be safe to rerun.
-- Recover stuck processing jobs after lease expiry.
-- Add tests for claim behavior and failure handling.
-
-Claim fields:
-
-- locked_at
-- locked_until
-- locked_by
-- attempt_count
-- last_attempt_at
-- last_error
-
-Claim rule:
-
-```text
-Only claim pending or failed submissions whose lock is empty or expired.
-Check affected row count after updating the lock.
-```
-
-## Observability Commands
-
-Small-system operations should start with CLI inspection commands and logs.
-
-Commands:
-
-```sh
-dailydocs list-submissions
-dailydocs show-submission <id>
-dailydocs list-runs <submission-id>
-dailydocs list-candidates <submission-id>
-```
-
-Log per pipeline run:
-
-- discovered count
-- fetched count
-- failed count
-- eligible count
-- rejected count
-- duration
-
-## Minimal Protected Admin UI
-
-The admin UI should remove the need to SSH for routine content pipeline work.
-
-It should not be publicly linked from the homepage, topics page, submissions page, or README. This is not a security boundary; admin routes still require authentication because the public repository makes the routes discoverable.
-
-Initial auth:
-
-- `ADMIN_TOKEN` environment variable
-- no default token
-- admin routes return `404` when `ADMIN_TOKEN` is unset
-- login form posts the token in the request body
-- successful login sets an `HttpOnly`, `Secure`, `SameSite=Lax` cookie
-- no tokens in URLs
-- no secrets in repository docs, tests, fixtures, or scripts
-
-Initial routes:
-
-```text
-GET  /admin/login
-POST /admin/login
-GET  /admin
-GET  /admin/submissions
-GET  /admin/submissions/{id}
-POST /admin/submissions/{id}/process
-POST /admin/submissions/{id}/activate
-```
-
-Initial scope:
-
-- list submissions
-- show submission details
-- show pipeline runs
-- show candidate pages with title, URL, classification, score, status, and reason
-- process pending or failed submissions
-- activate candidates for `candidates_ready` submissions
-- show command errors in the admin page without exposing them publicly
-
-Out of scope:
-
-- user accounts
-- roles
-- public admin links
-- editing active pages
-- deactivating active pages
-- backup/restore
-- deployment, systemd, Caddy, or server operations
-
-Definition of done:
-
-- Admin UI is inaccessible when `ADMIN_TOKEN` is unset.
-- Admin login sets a protected cookie.
-- Unauthenticated admin requests do not expose pipeline data.
-- Process and activate actions require POST.
-- Process and activate actions are covered by tests.
-- Existing CLI commands remain available.
-
-## Backlog: Feedback and Moderation
-
-Feedback should come after the queue and candidate pipeline exist.
-
-Possible features:
-
-- upvote pending submissions
-- flag duplicate submissions
-- suggest topic name edits
-- suggest better source URLs
-- mark active readings as wrong topic, not documentation, broken, or duplicate
-
-Definition of done is intentionally deferred.
-
-## Backlog: Deactivate Active Pages
-
-Admin users may later need to remove a page from future readings without deleting historical records.
-
-Possible features:
-
-- deactivate an active page
-- show whether a page appears in historical `daily_readings`
-- prevent hard deletion from routine admin UI
-- record a deactivation reason
-
-Definition of done is intentionally deferred.
-
-## Backlog: Edit Active Topic and Page Metadata
-
-Admin users may later need to fix imported metadata without touching SQLite directly.
-
-Possible features:
-
-- edit topic name and description
-- edit page title, source, official flag, estimated minutes, difficulty, and evergreen score
-- keep URL edits conservative because URL changes can affect historical readings and link validation
-- record updated time and reason
-
-Definition of done is intentionally deferred.
-
-## Backlog: Scheduled Offsite Backups
-
-Scheduled backups are useful but not on the critical path while the app has little production data and queue processing is manual.
-
-Current state:
-
-- manual SQLite backup script exists
-- manual SQLite restore script exists
-
-Backlog scope:
-
-- choose an object storage provider
-- add systemd timer/unit examples or bootstrap support
-- upload compressed SQLite backups off the VPS
-- define retention for daily, weekly, and monthly backups
-- document how to inspect timer logs and restore from an uploaded backup
-
-## Next: Quality Review Loop
-
-The next pipeline work should improve how DailyDocs identifies high-quality documentation pages.
-
-Good review boundary:
-
-```text
-candidate metadata + bounded excerpt -> structured review decision
-```
-
-Bad review boundary:
-
-```text
-find all good docs for this topic
-```
-
-Quality review should prioritize:
-
-- foundational pages
-- practical impact
-- canonical sources
-- unique insight
-
-The admin UI should make accepted and rejected candidates easy to compare so the rubric can be tuned from real examples.
-
-Definition of done is intentionally deferred.
+The web app can call the same topic-search application code inline. The command exists for local testing and production repair, not as the primary user path.
 
 ## Deployment
 
@@ -598,16 +252,12 @@ Application startup:
 Operational scripts:
 
 - `bootstrap.sh`
-- `backup.sh`
-- `restore.sh`
-- `validate-links`
-- `import-file`
-- `process-submission`
-- `process-pending-submissions`
-- `activate-candidates`
+- `backup-sqlite.sh`
+- `restore-sqlite.sh`
+- `deploy-remote.sh`
 
 ## MVP Content Bar
 
-Ship with 5-10 supported topics and documentation links.
+Each supported topic should aim for roughly 10 to 50 useful documentation links.
 
-This validates the daily reading flow before investing in the submission processing pipeline.
+The first automated version may store fewer than 10 results if the provider returns too few usable links, but the UI should make the topic state visible rather than hiding the failure.

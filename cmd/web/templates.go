@@ -9,16 +9,10 @@ import (
 var templateFS embed.FS
 
 var (
-	homeTemplate                  = mustTemplate("templates/home.html")
-	topicsTemplate                = mustTemplate("templates/topics.html")
-	submissionsTemplate           = mustTemplate("templates/submissions.html", "templates/submit_lock.html")
-	readingTemplate               = mustTemplate("templates/reading.html")
-	adminLoginTemplate            = mustTemplate("templates/admin_login.html")
-	adminSubmissionsTemplate      = mustTemplate("templates/admin_submissions.html")
-	adminSourcesTemplate          = mustTemplate("templates/admin_sources.html", "templates/submit_lock.html")
-	adminRunDetailTemplate        = mustTemplate("templates/admin_run_detail.html")
-	adminSourceDetailTemplate     = mustTemplate("templates/admin_source_detail.html", "templates/submit_lock.html")
-	adminSubmissionDetailTemplate = mustTemplate("templates/admin_submission_detail.html", "templates/submit_lock.html")
+	homeTemplate        = mustTemplate("templates/home.html")
+	topicsTemplate      = mustTemplate("templates/topics.html")
+	readingTemplate     = mustTemplate("templates/reading.html")
+	queuedTopicTemplate = mustTemplate("templates/queued_topic.html")
 )
 
 func mustTemplate(path string, extra ...string) *template.Template {

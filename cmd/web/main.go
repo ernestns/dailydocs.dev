@@ -53,9 +53,6 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/admin", app.adminHandler)
-	mux.HandleFunc("/admin/", app.adminHandler)
-	mux.HandleFunc("/submissions", app.submissionsHandler)
 	mux.HandleFunc("/topics", app.topicsHandler)
 	mux.HandleFunc("/topics/search", app.searchTopicsHandler)
 	mux.HandleFunc("/read", app.generateReadingHandler)

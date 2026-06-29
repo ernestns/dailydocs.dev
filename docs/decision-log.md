@@ -51,122 +51,68 @@ Decision: implement link validation before a broad automated importer.
 
 Reason: broken links are worse than a smaller topic catalog.
 
-### Replace Discovery Importer With Documentation Submissions
+### Replace Documentation URL Submissions With Topic Requests
 
-Decision: future topic expansion starts from submitted documentation URLs rather than direct topic requests.
+Decision: missing-topic expansion starts from a topic name, not a documentation URL.
 
-Reason: a documentation URL is lower friction and more actionable than a topic name alone. The system can infer or propose the topic from the submitted source, then discover candidate pages from that source.
+Reason: asking for only a topic is lower friction and keeps the product focused on "I want to read about Rust" rather than "I know which documentation homepage to submit."
 
 Implications:
 
-- Missing-topic search should offer documentation URL submission.
-- Topic name is optional at submission time.
-- Submitted sources are visible in a pending queue.
-- Initial processing is deterministic: discovery, crawl, extraction, heuristic classification, explainable scoring, filtering, deduplication, and persistence.
-- AI review is a later optional layer, not the first implementation.
-- Candidate activation is separate from candidate processing.
-- The old `dailydocs discover <topic> <url>` concept is replaced by `process-submission`.
+- Missing-topic search should offer a topic request.
+- The request is visible as queued.
+- The system starts a bounded search immediately when allowed by the global rate limit.
+- Search results are stored directly as active pages for the MVP.
+- There is no manual activation gate in the MVP.
+- Existing documentation URL submission, source, candidate, and admin activation paths are retired.
 
-Initial deterministic pipeline stages:
+Initial pipeline:
 
-- Discover candidate URLs.
-- Crawl pages and keep raw responses in memory for extraction.
-- Extract structured metadata.
-- Classify with deterministic heuristics.
-- Score with explainable components.
-- Filter by minimum score.
-- Deduplicate normalized and canonical URLs.
-- Persist eligible candidates.
+```text
+Topic
+  -> Search
+  -> Store
+  -> Display
+```
 
-Initial score threshold:
+### Use Tavily Search Without GPT Review For MVP
 
-- `score >= 70`: eligible candidate
+Decision: use Tavily as the search provider and remove GPT from the first automated topic pipeline.
 
-### Keep Submission Processing Bounded and Auditable
+Reason: the product needs the simplest useful loop first. Search-only results may be imperfect, but they avoid the cost, latency, prompt tuning, and extra failure modes of a model review pass.
 
-Decision: documentation processing must use explicit crawl bounds, two-phase deduplication, in-memory raw HTML handling, and structured per-URL failure statuses.
+Implications:
 
-Reason: public documentation homepages can contain large navigation graphs, duplicate URL forms, redirects, query strings, archives, release notes, and non-document pages. The pipeline must be predictable before it can be scheduled.
+- Store the search run and returned results.
+- Convert normalized, deduplicated results into active pages.
+- Prefer official documentation through the search query where possible.
+- Add better quality review later only after observing real search output.
+- AI summaries, quizzes, tagging, and quality review are future features, not MVP requirements.
 
-Initial crawl defaults:
+### Keep Topic Search Globally Bounded
 
-- same host only
-- submitted path prefix by default
-- strip fragments
-- drop query strings unless allowlisted
-- max pages: 250
-- max depth: 3
-- max bytes per page: 2 MB
-- request timeout: 10 seconds
-- concurrency: 1 per host
-- respect robots.txt
+Decision: the MVP runs at most one topic search at a time globally, and no more than one every five minutes.
 
-Deduplication happens twice:
+Reason: inline search keeps the product simple, but provider calls need a basic cost and abuse guard before being exposed publicly.
 
-1. Before crawl: normalize, scope-check, and dedupe the frontier.
-2. After crawl: dedupe redirects, final URLs, and trusted same-scope canonical URLs.
+Implications:
 
-Raw HTML is temporary and should not be persisted in the first implementation. Long-term records should keep candidate metadata, bounded excerpts, and score explanations.
-
-### Separate Public Queue State From Pipeline Attempts
-
-Decision: `documentation_submissions.status` is the public lifecycle, while `pipeline_runs.status` is the processing attempt lifecycle.
-
-Submission statuses:
-
-- pending
-- processing
-- candidates_ready
-- active
-- rejected
-- failed
-
-Pipeline run statuses:
-
-- running
-- completed
-- failed
-- canceled
-
-Processing claims use leases so a crashed run does not leave submissions stuck forever.
-
-### Keep Public Queue Boring
-
-Decision: `/submissions` can be public, but should expose only safe summary fields.
-
-Public fields:
-
-- source host
-- suggested topic
-- status
-- request count
-- last submitted time
-
-Do not expose raw crawler errors, rejected URLs, raw submitted links as clickable links, score components, or internal debug details on public pages. Add `noindex`.
+- If a topic is requested while the limit is active, keep it queued.
+- The UI should show that the request has been enqueued.
+- A later request or command can process queued topics.
+- Per-user rate limiting can wait until there is evidence the global limit is insufficient.
 
 ### Deprioritize Scheduled Backups
 
 Decision: keep manual backup and restore scripts, but move scheduled offsite backups to the backlog.
 
-Reason: the app currently has little production data, and near-term submission processing will be manual. Scheduled offsite backups matter more once the database contains meaningful user submissions or automated queue processing runs regularly.
+Reason: the app currently has little production data. Scheduled offsite backups matter more once the database contains meaningful topic requests or automated search runs regularly.
 
 Implications:
 
 - Manual SQLite backup and restore scripts remain available.
-- Scheduled backups should not block the submission queue or manual processing pipeline.
+- Scheduled backups should not block topic requests or automated search.
 - Before regular scheduled processing, revisit offsite backup cadence, storage provider, retention, and restore testing.
-
-### Keep OpenAI as Default AI Review Provider
-
-Decision: default AI review to OpenAI when `AI_REVIEW_PROVIDER` is not set. z.ai remains available only when explicitly selected.
-
-Reason: z.ai is not currently viable for DailyDocs processing. It has a concurrency limit of 1 and observed response times above 50 seconds, which makes the candidate review pipeline too slow and fragile for source processing.
-
-Implications:
-
-- Blank `AI_REVIEW_PROVIDER` should not auto-select z.ai, even if `ZAI_API_KEY` is present.
-- Use `AI_REVIEW_PROVIDER=zai` only for explicit experiments.
-- Runtime failures should continue to fall back to deterministic review rather than trying another AI provider.
 
 ## Open Decisions
 
@@ -188,8 +134,8 @@ Question: should seed/review files use YAML, JSON, or Markdown frontmatter?
 
 Recommendation: use YAML for human-edited topic files unless the Go implementation strongly favors another format.
 
-### Submission Feedback Scope
+### Topic Feedback Scope
 
-Question: should user feedback on pending submissions and active readings be part of the first processing pipeline version?
+Question: should user feedback on queued topics and active readings be part of the first topic-search pipeline version?
 
-Recommendation: make pending submissions publicly visible first. Add upvotes, duplicate flags, source edits, and reading-level feedback after the basic queue and processing pipeline exist.
+Recommendation: make queued topics visible first. Add upvotes, duplicate flags, source edits, and reading-level feedback after the basic topic-search pipeline exists.

@@ -3,18 +3,13 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/ernestns/daily-docs/internal/db"
 	"github.com/ernestns/daily-docs/internal/seed"
-	"github.com/ernestns/daily-docs/internal/topicsource"
 )
 
 func newTestHandler(conn *sql.DB) http.Handler {
@@ -25,9 +20,6 @@ func newTestHandler(conn *sql.DB) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/admin", app.adminHandler)
-	mux.HandleFunc("/admin/", app.adminHandler)
-	mux.HandleFunc("/submissions", app.submissionsHandler)
 	mux.HandleFunc("/topics", app.topicsHandler)
 	mux.HandleFunc("/topics/search", app.searchTopicsHandler)
 	mux.HandleFunc("/read", app.generateReadingHandler)
@@ -67,204 +59,4 @@ func importWebTopic(t *testing.T, ctx context.Context, conn *sql.DB, slug string
 
 func webIntPtr(value int) *int {
 	return &value
-}
-
-func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
-	for _, cookie := range cookies {
-		if cookie.Name == name {
-			return cookie
-		}
-	}
-	return nil
-}
-
-func adminLoginCookie(t *testing.T, handler http.Handler, token string) *http.Cookie {
-	t.Helper()
-
-	form := url.Values{"token": {token}}
-	request := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("admin login failed: %d %s", response.Code, response.Body.String())
-	}
-	cookie := findCookie(response.Result().Cookies(), adminSessionCookie)
-	if cookie == nil {
-		t.Fatal("expected admin session cookie")
-	}
-	return cookie
-}
-
-func adminCSRFToken(t *testing.T, handler http.Handler, cookie *http.Cookie, submissionID int64) string {
-	t.Helper()
-
-	request := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/admin/submissions/%d", submissionID), nil)
-	request.AddCookie(cookie)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("admin detail failed: %d %s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	marker := `name="csrf" value="`
-	start := strings.Index(body, marker)
-	if start < 0 {
-		t.Fatalf("expected csrf token in admin detail:\n%s", body)
-	}
-	start += len(marker)
-	end := strings.Index(body[start:], `"`)
-	if end < 0 {
-		t.Fatalf("expected csrf token closing quote:\n%s", body)
-	}
-	return body[start : start+end]
-}
-
-func insertWebSubmission(t *testing.T, ctx context.Context, conn *sql.DB, rawURL string, topic string) int64 {
-	t.Helper()
-
-	result, err := conn.ExecContext(ctx, `
-		INSERT INTO documentation_submissions (
-			submitted_url,
-			normalized_url,
-			source_host,
-			suggested_topic,
-			status
-		)
-		VALUES (?, ?, 'example.com', ?, 'pending')
-	`, rawURL, rawURL, topic)
-	if err != nil {
-		t.Fatalf("insert web submission: %v", err)
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		t.Fatalf("read submission id: %v", err)
-	}
-	return id
-}
-
-func createWebTopicSource(t *testing.T, ctx context.Context, conn *sql.DB, submissionID int64, slug string, name string) int64 {
-	t.Helper()
-
-	source, err := topicsource.CreateFromSubmission(ctx, conn, topicsource.CreateFromSubmissionInput{
-		SubmissionID: submissionID,
-		TopicSlug:    slug,
-		TopicName:    name,
-	})
-	if err != nil {
-		t.Fatalf("create topic source: %v", err)
-	}
-	return source.ID
-}
-
-func insertWebSourceRun(t *testing.T, ctx context.Context, conn *sql.DB, submissionID int64, sourceID int64) int64 {
-	t.Helper()
-
-	result, err := conn.ExecContext(ctx, `
-		INSERT INTO pipeline_runs (
-			documentation_submission_id,
-			topic_source_id,
-			status,
-			discovered_count,
-			crawled_count,
-			eligible_count,
-			rejected_count
-		)
-		VALUES (?, ?, 'completed', 10, 8, 1, 7)
-	`, submissionID, sourceID)
-	if err != nil {
-		t.Fatalf("insert source run: %v", err)
-	}
-	runID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatalf("read source run id: %v", err)
-	}
-	return runID
-}
-
-func insertWebSourceCandidate(t *testing.T, ctx context.Context, conn *sql.DB, submissionID int64, sourceID int64, runID int64, title string, rawURL string) {
-	t.Helper()
-	insertWebSourceCandidateWithStatus(t, ctx, conn, submissionID, sourceID, runID, title, rawURL, "eligible", 95, "concept")
-}
-
-func insertWebSourceCandidateWithStatus(t *testing.T, ctx context.Context, conn *sql.DB, submissionID int64, sourceID int64, runID int64, title string, rawURL string, status string, score int, pageType string) {
-	t.Helper()
-
-	_, err := conn.ExecContext(ctx, `
-		INSERT INTO page_candidates (
-			documentation_submission_id,
-			pipeline_run_id,
-			topic_source_id,
-			proposed_topic_slug,
-			proposed_topic_name,
-			title,
-			url,
-			normalized_url,
-			source,
-			word_count,
-			score,
-			gate_score,
-			gate_page_type,
-			reject_stage,
-			review_model,
-			review_confidence,
-			review_rationale,
-			gate_input_tokens,
-			gate_output_tokens,
-			gate_reasoning_tokens,
-			gate_total_tokens,
-			enrichment_total_tokens,
-			official,
-			estimated_minutes,
-			status
-		)
-		VALUES (?, ?, ?, 'rust', 'Rust', ?, ?, ?, 'Rust Documentation', 800, ?, 91, ?, '', 'gpt-5-nano', 0.93, 'Excellent daily reading.', 100, 20, 5, 120, 40, 1, 4, ?)
-	`, submissionID, runID, sourceID, title, rawURL, rawURL, score, pageType, status)
-	if err != nil {
-		t.Fatalf("insert source candidate: %v", err)
-	}
-}
-
-func adminDocsServer() *httptest.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, `<!doctype html>
-<html>
-<head><title>Rust Documentation</title></head>
-<body>
-<main>
-<h1>Rust Documentation</h1>
-<a href="/docs/ownership">Ownership</a>
-</main>
-</body>
-</html>`)
-	})
-	mux.HandleFunc("/docs/ownership", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprintf(w, `<!doctype html>
-<html>
-<head><title>Ownership Guide</title></head>
-<body>
-<main>
-<h1>Ownership Guide</h1>
-<h2>Overview</h2>
-<p>%s</p>
-<h2>Ownership</h2>
-<p>%s</p>
-</main>
-</body>
-</html>`, repeatedWebWords(80), repeatedWebWords(80))
-	})
-	return httptest.NewServer(mux)
-}
-
-func repeatedWebWords(count int) string {
-	words := make([]string, 0, count)
-	for i := 0; i < count; i++ {
-		words = append(words, "documentation")
-	}
-	return strings.Join(words, " ")
 }

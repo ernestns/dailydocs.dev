@@ -17,7 +17,7 @@ func TestOpenAppliesMigrations(t *testing.T) {
 	}
 	defer conn.Close()
 
-	for _, table := range []string{"topics", "pages", "daily_readings", "imports", "schema_migrations", "documentation_submissions"} {
+	for _, table := range []string{"topics", "pages", "daily_readings", "imports", "topic_search_runs", "topic_search_results", "schema_migrations"} {
 		if !tableExists(ctx, t, conn, table) {
 			t.Fatalf("expected table %q to exist", table)
 		}

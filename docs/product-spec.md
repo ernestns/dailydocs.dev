@@ -1,6 +1,6 @@
 # DailyDocs Product Specification
 
-Version: 0.1 (MVP)
+Version: 0.2 (MVP)
 
 ## Vision
 
@@ -45,28 +45,21 @@ The application is designed for repeated daily use.
 
 Given a topic and date, DailyDocs always returns the same reading.
 
-This enables:
-
-- teams reading together
-- shared discussions
-- cache-friendly infrastructure
-- reproducible URLs
+This enables teams to read together, share discussions, cache responses, and revisit historical readings.
 
 ### Stateless
 
 Version 1 stores no user state.
 
-No accounts, sessions, cookies, or local storage.
+No accounts, sessions, cookies, or local storage are required for the reader experience.
 
 The URL is the reading.
 
 ### Useful
 
-The application recommends documentation links selected from known documentation sources.
+Each topic should have a small catalog of roughly 10 to 50 useful documentation links. More links are only useful when they improve the daily reading experience.
 
-Each topic should have a small catalog of roughly 10 to 50 high-quality documentation links. More links are only useful when they improve the daily reading experience.
-
-Identifying high-quality documentation is the central product challenge.
+Identifying useful documentation is the central product challenge.
 
 Quality signals include:
 
@@ -83,21 +76,26 @@ Community resources are only used when an official source does not exist.
 
 ## Goals
 
-- Encourage continuous learning
 - Provide one reading per topic per day
 - Promote official documentation
 - Reduce the need to search for documentation to read
 - Enable teams to learn together
+- Preserve historical daily readings
 
 ## MVP User Flow
 
 User visits `dailydocs.dev`, searches for a topic, then clicks `View Reading`.
 
-Example topics:
+If the topic exists, DailyDocs shows today's reading.
 
-- Go
-- SQLite
-- Docker
+If the topic does not exist, DailyDocs creates an enqueued topic request and starts a bounded search immediately.
+
+```text
+Topic
+  -> Search
+  -> Store
+  -> Display
+```
 
 The generated reading URL is bookmarkable:
 
@@ -140,8 +138,6 @@ Examples:
 /go/2026-06-26
 /sqlite
 /sqlite/2026-06-26
-/docker
-/docker/2026-06-26
 ```
 
 The topic-only URL is the common bookmarkable URL and resolves to today's reading.
@@ -150,47 +146,69 @@ The dated URL is the stable archive URL for a specific reading date.
 
 The topic path segment uses the topic slug. The date path segment uses `YYYY-MM-DD`.
 
-The homepage may redirect a selected topic to the topic-only URL.
-
 ## Reading Selection
 
 Each topic has a stable reading order.
-
-During import:
-
-1. Discover documentation pages
-2. Extract metadata
-3. Review quality
-4. Filter poor candidates
-5. Store reading order
-
-Example:
-
-```text
-SQLite
-
-1 WAL Mode
-2 Partial Indexes
-3 VACUUM
-4 Transactions
-5 Query Planner
-```
 
 Daily readings are stored in a `daily_readings` assignment table rather than recomputed forever from the current page list. This preserves historical accuracy when documentation pages are added, removed, disabled, or reordered.
 
 The application may lazily create a daily assignment on first request for a topic/date pair.
 
+## Topic Creation
+
+Missing topics are requested by topic name only. Users are not asked to provide a documentation URL.
+
+When a missing topic is requested:
+
+1. Normalize the topic into a slug.
+2. Create or reuse a topic request record.
+3. Show that the request is enqueued.
+4. If the global search limit allows it, run the search immediately.
+5. Store accepted search results as active pages.
+6. Display the first available reading once pages exist.
+
+Initial rate limit:
+
+- one topic search at a time globally
+- at most one topic search every five minutes
+
+The MVP has no manual activation gate.
+
+## Search Pipeline
+
+The first automated pipeline is intentionally simple:
+
+```text
+Topic
+  -> Search provider
+  -> Normalize results
+  -> Store pages
+  -> Display daily reading
+```
+
+Tavily is the preferred search provider.
+
+The query should favor official documentation and useful documentation pages, but search results are not manually reviewed before storage in the MVP.
+
+Stored search results must include:
+
+- topic
+- title
+- URL
+- source/domain
+- snippet or description when available
+- result rank
+- date stored
+
+If the search provider is unavailable or returns no usable results, the topic remains visible as enqueued or failed rather than silently disappearing.
+
 ## Functional Requirements
 
 ### Search Topics
 
-Autocomplete is supported.
+Autocomplete is supported for existing topics.
 
-Users search existing topics.
-
-If a topic does not exist, offer documentation URL submission.
-
-For future topic creation, the lower-friction action is documentation link submission rather than topic submission. A user can submit a documentation base URL, optionally provide a topic name, and the system can infer or propose the topic during processing.
+If a topic does not exist, the UI should clearly offer to request the topic.
 
 ### View Reading
 
@@ -203,169 +221,16 @@ Produce a bookmarkable URL.
 Display:
 
 - title
-- estimated reading time
+- estimated reading time when known
 - source
-- official badge
+- official badge when known
 - read button
 
-## Import System
+### Requested Topics
 
-The importer is a separate command mode in the DailyDocs binary.
+Users should be able to tell that a missing topic has been enqueued.
 
-Purpose: turn a topic into a reading list.
-The target output is 10 to 50 high-quality documentation links for a topic, not an exhaustive mirror of the documentation site.
-
-Example:
-
-```text
-Import "SQLite"
-  -> Discover official documentation
-  -> Extract pages
-  -> Normalize URLs
-  -> Remove duplicates
-  -> Estimate reading time
-  -> Assign metadata
-  -> Review quality
-  -> Store
-```
-
-Initially, imports are manually started.
-
-## Documentation Link Submission
-
-Future topic expansion should start from submitted documentation links.
-
-If a user searches for a topic that does not exist, offer a way to submit a documentation URL. The topic name is optional at submission time.
-
-Example submission:
-
-```text
-url: https://sqlite.org/docs.html
-topic: SQLite
-```
-
-The submitted URL is enqueued for processing. It does not immediately create an active topic.
-
-Submission status values:
-
-- pending
-- processing
-- candidates_ready
-- active
-- rejected
-- failed
-
-Public submission pages should show status, source host, suggested topic, request count, and last submission time. They should not expose internal errors, raw crawl output, rejected candidate URLs, or score components. Public queue pages should include `noindex`.
-
-Submission safety:
-
-- accept only `http` and `https`
-- normalize and deduplicate URLs before insert
-- hash submitter IPs for rate limiting
-- include basic bot friction such as a honeypot field
-- make submitted URLs non-clickable until processed
-- keep admin/debug details out of the public queue
-
-Processing:
-
-```text
-submitted documentation URL
-  -> infer or confirm topic
-  -> discover candidate documentation pages
-  -> crawl pages
-  -> extract structured metadata
-  -> review quality
-  -> filter low-scoring pages
-  -> deduplicate URLs and canonicals
-  -> persist eligible candidates
-```
-
-The pipeline should be deterministic and idempotent around discovery, extraction, deduplication, and persistence so the same documentation homepage can be processed repeatedly without duplicating candidates.
-
-Quality review uses page metadata and bounded excerpts. The reviewer should favor pages that are foundational, practically useful, canonical, and unique.
-
-Candidate pages should be persisted before activation. A separate activation step can promote eligible candidates into active `pages`.
-
-Initial bounded stages:
-
-1. Discover candidate URLs from sitemap.xml, robots.txt sitemap declarations, navigation menus, sidebars, breadcrumbs, and internal documentation links.
-2. Normalize, scope-check, and deduplicate the crawl frontier before fetching.
-3. Crawl candidate URLs and keep URL, HTML, HTTP status, and headers in memory for extraction.
-4. Extract title, H1, headings, plain text, word count, links, canonical URL, and meta description.
-5. Apply hard exclusions before review.
-6. Review page quality.
-7. Filter pages below the minimum score.
-8. Deduplicate redirects, normalized URLs, and trusted canonical URLs.
-9. Persist eligible candidates.
-
-Default crawl policy:
-
-- same host only
-- submitted path prefix by default
-- strip fragments
-- drop query strings unless allowlisted
-- max pages: 250
-- max depth: 3
-- max bytes per page: 2 MB
-- request timeout: 10 seconds
-- concurrency: 1 per host
-- respect robots.txt disallow rules
-- extract sitemap declarations from robots.txt
-
-Canonical URLs are trusted only when they stay inside the allowed host and path scope. Otherwise, the final fetched URL remains the candidate identity.
-
-Hard exclusions:
-
-- non-HTML responses
-- login-required pages
-- release notes
-- archive pages
-- changelogs
-- download pages
-- search pages
-- tag/category index pages
-
-Possible page types:
-
-- Tutorial
-- Guide
-- Concept
-- Reference
-- API
-- Example
-- Migration
-- Release Notes
-- FAQ
-- Archive
-- Other
-
-Quality rubric:
-
-- Foundational: does understanding this unlock many other topics?
-- Practical impact: will this knowledge improve how people build or debug real systems?
-- Canonicality: is this the authoritative or widely accepted source?
-- Uniqueness: does it provide insights that are not repeated elsewhere?
-
-Example threshold:
-
-- `score >= 70`: eligible candidate
-
-Users should be able to see pending submissions so they know a documentation source has been enqueued. A public queue page can list submitted/pending sources and their processing status.
-
-Possible future feedback on the queue:
-
-- upvote a pending submission
-- flag duplicates
-- suggest topic name edits
-- suggest better source URLs
-
-Possible future feedback on active readings:
-
-- good link
-- wrong topic
-- not documentation
-- broken link
-- duplicate
+A topic request should not require an account.
 
 ## Link Validation
 
@@ -383,53 +248,18 @@ Broken links should never appear in new recommendations.
 
 ## Architecture
 
-### Web Application
+DailyDocs is a single Go web application backed by SQLite and deployed behind Caddy.
 
 Responsibilities:
 
 - topic search
-- reading generation
-- deterministic selection
+- topic request enqueueing
+- bounded search provider calls
+- daily reading assignment
 - rendering
+- link validation command mode
 
-Technology:
-
-- Go
-- SQLite
-- Caddy
-
-Single monolith.
-
-### Importer
-
-Separate Go command mode.
-
-Responsibilities:
-
-- documentation link processing
-- topic inference
-- candidate discovery
-- scraping
-- parsing
-- deterministic classification
-- explainable scoring
-- metadata generation
-- deduplication
-- reading order generation
-
-Runs manually.
-
-### Validator
-
-Separate Go command mode.
-
-Responsibilities:
-
-- link verification
-- health checks
-- redirect updates
-
-Runs manually, scheduled later if desired.
+Application startup automatically performs database migrations.
 
 ## Data Model
 
@@ -441,23 +271,27 @@ Runs manually, scheduled later if desired.
 - description
 - status
 - created_at
+- updated_at
+
+Topic statuses:
+
+- active
+- queued
+- searching
+- failed
 
 ### pages
 
 - id
 - topic_id
-- page_candidate_id
-- activated_from_pipeline_run_id
 - title
 - url
 - source
 - official
 - estimated_minutes
-- difficulty
-- evergreen_score
 - reading_order
 - active
-- activation_reason
+- discovered_at
 - last_verified
 - created_at
 - updated_at
@@ -477,129 +311,37 @@ Unique constraint:
 - topic_id
 - reading_date
 
-### imports
+### topic_search_runs
 
 - id
-- topic
-- status
-- started_at
-- completed_at
-- pages_found
-- pages_imported
-- error
-
-The `imports` table is for seed-file imports only. Pipeline processing history belongs in `documentation_submissions`, `pipeline_runs`, and `page_candidates`.
-
-### documentation_submissions
-
-- id
-- submitted_url
-- normalized_url
-- source_host
-- inferred_topic
-- suggested_topic
-- status
-- visibility
-- allowed_hosts
-- allowed_path_prefixes
-- locked_at
-- locked_until
-- locked_by
-- latest_pipeline_run_id
-- request_count
-- attempt_count
-- last_attempt_at
-- submitter_ip_hash
-- rejection_reason
-- last_error
-- first_submitted_at
-- last_submitted_at
-- error
-
-Unique constraint:
-
-- normalized_url
-
-### pipeline_runs
-
-- id
-- documentation_submission_id
-- status
-- crawl_policy
-- started_at
-- completed_at
-- discovered_count
-- crawled_count
-- eligible_count
-- rejected_count
-- failure_count
-- error
-
-`documentation_submissions.status` is the public lifecycle. `pipeline_runs.status` is the processing attempt lifecycle.
-
-Submission statuses:
-
-- pending
-- processing
-- candidates_ready
-- active
-- rejected
-- failed
-
-Pipeline run statuses:
-
-- running
-- completed
-- failed
-- canceled
-
-The first implementation does not persist discovered URL rows or raw HTML rows. Discovery, crawl, and extraction artifacts stay in memory during a run. `pipeline_runs` stores aggregate counts and bounded error summaries; `page_candidates` stores the eligible output.
-
-### page_candidates
-
-- id
-- documentation_submission_id
-- pipeline_run_id
-- proposed_topic_slug
-- proposed_topic_name
 - topic_id
-- title
-- h1
-- url
-- normalized_url
-- canonical_url
-- source
-- http_status
-- extracted_excerpt
-- word_count
-- headings
-- primary_classification
-- classification_tags
-- classification_rules_version
-- score
-- score_components
-- official
-- estimated_minutes
-- reason
-- reject_reason
+- provider
+- query
 - status
+- started_at
+- completed_at
+- result_count
+- stored_count
+- error
+
+### topic_search_results
+
+- id
+- topic_id
+- search_run_id
+- title
+- url
+- source
+- snippet
+- rank
+- stored_as_page_id
 - created_at
-- reviewed_at
-
-`headings`, `classification_tags`, and `score_components` are JSON stored as text in SQLite until querying them requires a different shape.
-
-Unique constraints:
-
-- documentation_submission_id, normalized_url
-- documentation_submission_id, canonical_url when canonical_url is present
-
-Activation history can be added later if moderation needs it. For MVP, provenance fields on `pages` are enough.
 
 ## Deployment Philosophy
 
 Infrastructure should fit on a single VPS.
 
-Single Hetzner VPS, SQLite database, and one Go binary with web, import, validation, and processing command modes.
+Single Hetzner VPS, SQLite database, and one Go binary with web, validation, and search command modes.
 
 The repository is the source of truth.
 
@@ -613,21 +355,13 @@ Install Git
   -> Application online
 ```
 
-Application startup automatically performs database migrations.
-
 ## Backups
 
 SQLite operates in WAL mode.
 
 Manual backups use SQLite's backup mechanism.
 
-Scheduled offsite backups are a backlog item. When added, backups should be:
-
-- compressed
-- uploaded to object storage
-- retained daily, weekly, and monthly
-
-Recovery should be documented and tested before scheduled processing becomes important.
+Scheduled offsite backups are a backlog item.
 
 ## Future Features
 
@@ -638,9 +372,10 @@ Recovery should be documented and tested before scheduled processing becomes imp
 - Comments
 - Page deactivation
 - Topic and page metadata editing
-- User feedback on pending submissions and active readings
+- User feedback on requested topics and active readings
 - Moderation
-- Optional AI summaries, quizzes, difficulty estimation, or tagging
+- Better result quality review
+- Search provider fallback
 
 AI-generated reading summaries, quizzes, and tagging are not required for the core reading experience.
 
@@ -657,7 +392,7 @@ Secondary:
 - supported topics
 - indexed pages
 - broken link rate
-- successful imports
+- successful topic searches
 
 ## Guiding Principle
 

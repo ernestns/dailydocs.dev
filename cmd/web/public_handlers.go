@@ -8,16 +8,11 @@ import (
 	"fmt"
 	"html/template"
 	"log"
-	"net"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/ernestns/daily-docs/internal/reading"
-	"github.com/ernestns/daily-docs/internal/submission"
-	"github.com/ernestns/daily-docs/internal/topicsource"
 )
 
 func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
@@ -46,9 +41,21 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, reading.ErrTopicNotFound):
-			http.NotFound(w, r)
+			queued, queueErr := a.queueTopic(r.Context(), topic)
+			if queueErr != nil {
+				log.Printf("queue topic failed: %v", queueErr)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			renderTemplate(w, queuedTopicTemplate, queued)
 		case errors.Is(err, reading.ErrNoActivePages):
-			http.Error(w, "topic has no active pages", http.StatusNotFound)
+			queued, queueErr := a.queueTopic(r.Context(), topic)
+			if queueErr != nil {
+				log.Printf("queue empty topic failed: %v", queueErr)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			renderTemplate(w, queuedTopicTemplate, queued)
 		case errors.Is(err, reading.ErrInvalidDate):
 			http.Error(w, "invalid date", http.StatusBadRequest)
 		default:
@@ -93,117 +100,6 @@ func (a app) topicsHandler(w http.ResponseWriter, r *http.Request) {
 	}{Topics: topics})
 }
 
-func (a app) submissionsHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		a.submissionsPageHandler(w, r, "")
-	case http.MethodPost:
-		a.createSubmissionHandler(w, r)
-	default:
-		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (a app) submissionsPageHandler(w http.ResponseWriter, r *http.Request, message string) {
-	submissions, err := submission.ListPublic(r.Context(), a.db, 50)
-	if err != nil {
-		log.Printf("list submissions failed: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	renderTemplate(w, submissionsTemplate, struct {
-		Message      string
-		PrefillTopic string
-		Submissions  []submission.Submission
-	}{
-		Message:      message,
-		PrefillTopic: strings.TrimSpace(r.URL.Query().Get("topic")),
-		Submissions:  submissions,
-	})
-}
-
-func (a app) createSubmissionHandler(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-
-	if strings.TrimSpace(r.Form.Get("website")) != "" {
-		http.Redirect(w, r, "/submissions", http.StatusSeeOther)
-		return
-	}
-
-	created, err := submission.Create(r.Context(), a.db, submission.CreateInput{
-		URL:            r.Form.Get("url"),
-		SuggestedTopic: r.Form.Get("topic"),
-		SubmitterIP:    clientIP(r),
-		IPHashSalt:     os.Getenv("IP_HASH_SALT"),
-	})
-	if err != nil {
-		if errors.Is(err, submission.ErrInvalidURL) {
-			http.Error(w, "documentation URL must use http or https", http.StatusBadRequest)
-			return
-		}
-		log.Printf("create submission failed: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	a.maybeCreateSourceAndDiscover(r.Context(), created)
-
-	http.Redirect(w, r, "/submissions", http.StatusSeeOther)
-}
-
-func (a app) maybeCreateSourceAndDiscover(ctx context.Context, sub submission.Submission) {
-	if strings.TrimSpace(sub.SuggestedTopic) == "" {
-		return
-	}
-	topic, ok, err := findTopic(ctx, a.db, sub.SuggestedTopic)
-	if err != nil {
-		log.Printf("auto source topic lookup failed submission_id=%d error=%v", sub.ID, err)
-		return
-	}
-	if !ok {
-		source, err := topicsource.CreateFromSubmission(ctx, a.db, topicsource.CreateFromSubmissionInput{
-			SubmissionID: sub.ID,
-			TopicSlug:    sub.SuggestedTopic,
-			TopicName:    sub.SuggestedTopic,
-		})
-		if err != nil {
-			log.Printf("auto source create for new topic failed submission_id=%d topic=%s error=%v", sub.ID, sub.SuggestedTopic, err)
-			return
-		}
-		a.autoDiscoverSource(ctx, sub.ID, source.ID)
-		return
-	}
-
-	topicID, err := topicIDBySlug(ctx, a.db, topic.Slug)
-	if err != nil {
-		log.Printf("auto source topic id lookup failed submission_id=%d topic=%s error=%v", sub.ID, topic.Slug, err)
-		return
-	}
-	source, err := topicsource.CreateForTopic(ctx, a.db, topicsource.CreateForTopicInput{
-		TopicID:      topicID,
-		URL:          sub.NormalizedURL,
-		SubmissionID: sub.ID,
-	})
-	if err != nil {
-		log.Printf("auto source create failed submission_id=%d topic=%s error=%v", sub.ID, topic.Slug, err)
-		return
-	}
-	a.autoDiscoverSource(ctx, sub.ID, source.ID)
-}
-
-func (a app) autoDiscoverSource(ctx context.Context, submissionID int64, sourceID int64) {
-	discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if _, err := a.discoverSourcePreview(discoverCtx, sourceID); err != nil {
-		log.Printf("auto source discovery failed submission_id=%d source_id=%d error=%v", submissionID, sourceID, err)
-	}
-}
-
 func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -224,7 +120,13 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		http.Redirect(w, r, "/submissions?topic="+url.QueryEscape(topic), http.StatusSeeOther)
+		queued, queueErr := a.queueTopic(r.Context(), topic)
+		if queueErr != nil {
+			log.Printf("queue topic failed: %v", queueErr)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
 		return
 	}
 
@@ -273,6 +175,12 @@ type topicOption struct {
 	Name string `json:"name"`
 }
 
+type queuedTopicView struct {
+	Slug   string
+	Name   string
+	Status string
+}
+
 func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]topicOption, error) {
 	query = strings.TrimSpace(strings.ToLower(query))
 
@@ -312,6 +220,42 @@ func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]t
 	return topics, nil
 }
 
+func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, error) {
+	slug := slugFromTopicName(topic)
+	if slug == "" {
+		return queuedTopicView{}, fmt.Errorf("invalid topic %q", topic)
+	}
+	name := displayTopicName(topic, slug)
+	_, err := a.db.ExecContext(ctx, `
+		INSERT INTO topics (slug, name, status, updated_at)
+		VALUES (?, ?, 'queued', datetime('now'))
+		ON CONFLICT(slug) DO UPDATE SET
+			name = CASE
+				WHEN topics.name = topics.slug THEN excluded.name
+				ELSE topics.name
+			END,
+			status = 'queued',
+			updated_at = datetime('now')
+	`, slug, name)
+	if err != nil {
+		return queuedTopicView{}, fmt.Errorf("upsert queued topic: %w", err)
+	}
+	return loadQueuedTopic(ctx, a.db, slug)
+}
+
+func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string) (queuedTopicView, error) {
+	var queued queuedTopicView
+	err := conn.QueryRowContext(ctx, `
+		SELECT slug, name, status
+		FROM topics
+		WHERE slug = ?
+	`, slug).Scan(&queued.Slug, &queued.Name, &queued.Status)
+	if err != nil {
+		return queuedTopicView{}, fmt.Errorf("load queued topic: %w", err)
+	}
+	return queued, nil
+}
+
 func findTopic(ctx context.Context, conn *sql.DB, value string) (topicOption, bool, error) {
 	value = strings.TrimSpace(strings.ToLower(value))
 	if value == "" {
@@ -336,20 +280,6 @@ func findTopic(ctx context.Context, conn *sql.DB, value string) (topicOption, bo
 	return topicOption{}, false, fmt.Errorf("query topic: %w", err)
 }
 
-func topicIDBySlug(ctx context.Context, conn *sql.DB, slug string) (int64, error) {
-	var id int64
-	err := conn.QueryRowContext(ctx, `
-		SELECT id
-		FROM topics
-		WHERE slug = ?
-			AND status = 'active'
-	`, slug).Scan(&id)
-	if err != nil {
-		return 0, fmt.Errorf("query topic id: %w", err)
-	}
-	return id, nil
-}
-
 func renderTemplate(w http.ResponseWriter, tmpl *template.Template, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.Execute(w, data); err != nil {
@@ -357,14 +287,41 @@ func renderTemplate(w http.ResponseWriter, tmpl *template.Template, data any) {
 	}
 }
 
-func clientIP(r *http.Request) string {
-	if forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
-		ip, _, _ := strings.Cut(forwardedFor, ",")
-		return strings.TrimSpace(ip)
+func slugFromTopicName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	previousDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			previousDash = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			previousDash = false
+		default:
+			if builder.Len() > 0 && !previousDash {
+				builder.WriteByte('-')
+				previousDash = true
+			}
+		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return strings.TrimSpace(r.RemoteAddr)
+	return strings.Trim(builder.String(), "-")
+}
+
+func displayTopicName(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
 	}
-	return strings.TrimSpace(host)
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '-' || r == '_'
+	})
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
 }
