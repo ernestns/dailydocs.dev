@@ -1,0 +1,1 @@
+ALTER TABLE topic_search_runs ADD COLUMN stage TEXT NOT NULL DEFAULT '';

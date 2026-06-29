@@ -185,7 +185,7 @@ func TestGenerateReadingProcessesMissingTopicWhenProviderExists(t *testing.T) {
 	}
 }
 
-func TestMissingTopicPageShowsQueuedStateWhenProviderFails(t *testing.T) {
+func TestMissingTopicPageShowsFailedStateWhenProviderFails(t *testing.T) {
 	ctx := context.Background()
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
@@ -198,8 +198,8 @@ func TestMissingTopicPageShowsQueuedStateWhenProviderFails(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, "queued") {
-		t.Fatalf("expected queued state in body:\n%s", body)
+	if !strings.Contains(body, "failed") {
+		t.Fatalf("expected failed state in body:\n%s", body)
 	}
 }
 
@@ -369,6 +369,15 @@ func TestTopicsPageListsRequestedTopicsWithStatus(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, "UPDATE topics SET status = 'failed' WHERE slug = 'docker'"); err != nil {
 		t.Fatalf("fail topic: %v", err)
 	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO topics (slug, name, status) VALUES ('rust', 'Rust', 'searching')"); err != nil {
+		t.Fatalf("seed searching topic: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO topic_search_runs (topic_id, provider, query, status, stage)
+		VALUES ((SELECT id FROM topics WHERE slug = 'rust'), 'tavily', 'Rust docs', 'running', 'reviewing')
+	`); err != nil {
+		t.Fatalf("seed searching run: %v", err)
+	}
 
 	handler := newTestHandler(conn)
 	response := httptest.NewRecorder()
@@ -389,6 +398,9 @@ func TestTopicsPageListsRequestedTopicsWithStatus(t *testing.T) {
 	}
 	if !strings.Contains(body, `failed`) {
 		t.Fatalf("expected failed status:\n%s", body)
+	}
+	if !strings.Contains(body, `reviewing`) {
+		t.Fatalf("expected reviewing stage:\n%s", body)
 	}
 	if strings.Contains(body, `>Evaluations<`) {
 		t.Fatalf("did not expect separate evaluations link:\n%s", body)

@@ -151,6 +151,14 @@ Current tables:
 - `failed`
 - `rate_limited`
 
+`topic_search_runs.stage` values while status is `running`:
+
+- `searching`
+- `reviewing`
+- `storing`
+
+Search candidates are stored after Tavily returns and before GPT review. Review metadata is written back to those rows after GPT returns. Only accepted reviewed candidates become active `pages`.
+
 Historical `daily_readings` rows must not be deleted.
 
 ## Web Routes

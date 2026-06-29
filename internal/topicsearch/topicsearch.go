@@ -17,6 +17,15 @@ const (
 	DefaultMinScore    = 65
 	DefaultDailyLimit  = 20
 	StaleRunTimeout    = 30 * time.Minute
+
+	runStatusRunning     = "running"
+	runStatusCompleted   = "completed"
+	runStatusFailed      = "failed"
+	runStatusRateLimited = "rate_limited"
+
+	runStageSearching = "searching"
+	runStageReviewing = "reviewing"
+	runStageStoring   = "storing"
 )
 
 var (
@@ -139,7 +148,7 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 	if limited, err := searchRateLimited(ctx, conn, now, minInterval); err != nil {
 		return Result{}, err
 	} else if limited {
-		runID, runErr := createSearchRun(ctx, conn, topicID, buildQuery(name), "rate_limited", now)
+		runID, runErr := createSearchRun(ctx, conn, topicID, buildQuery(name), runStatusRateLimited, "", now)
 		if runErr != nil {
 			return Result{}, runErr
 		}
@@ -158,7 +167,7 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 	}
 
 	query := buildQuery(name)
-	runID, err := createSearchRun(ctx, conn, topicID, query, "running", now)
+	runID, err := createSearchRun(ctx, conn, topicID, query, runStatusRunning, runStageSearching, now)
 	if err != nil {
 		return Result{}, err
 	}
@@ -182,9 +191,18 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 		}
 		return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, ErrNoResults
 	}
+	if err := storeSearchCandidates(ctx, conn, topicID, runID, normalized); err != nil {
+		if err := failRunAndTopic(ctx, conn, topicID, runID, err); err != nil {
+			return Result{}, err
+		}
+		return Result{}, err
+	}
+
 	var reviewOutput ReviewOutput
-	acceptedCount := len(normalized)
 	if opts.Reviewer != nil {
+		if err := updateSearchRunStage(ctx, conn, runID, runStageReviewing); err != nil {
+			return Result{}, err
+		}
 		normalized, reviewOutput, err = reviewResults(ctx, name, opts.Reviewer, normalized, minScore)
 		if err != nil {
 			if err := failRunAndTopic(ctx, conn, topicID, runID, err); err != nil {
@@ -192,16 +210,19 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 			}
 			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, err
 		}
-		acceptedCount = countAccepted(normalized)
 	}
 	if len(normalized) > maxResults {
 		normalized = capAcceptedResults(normalized, maxResults)
 	}
+	acceptedCount := countAccepted(normalized)
 	for i := range normalized {
 		normalized[i].Rank = i + 1
 	}
 
-	storedCount, err := storeResults(ctx, conn, topicID, runID, normalized)
+	if err := updateSearchRunStage(ctx, conn, runID, runStageStoring); err != nil {
+		return Result{}, err
+	}
+	storedCount, err := storeReviewedResults(ctx, conn, topicID, runID, normalized)
 	if err != nil {
 		if err := failRunAndTopic(ctx, conn, topicID, runID, err); err != nil {
 			return Result{}, err
@@ -329,8 +350,8 @@ func searchRateLimited(ctx context.Context, conn *sql.DB, now time.Time, minInte
 	if err := conn.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM topic_search_runs
-		WHERE status = 'running'
-	`).Scan(&running); err != nil {
+		WHERE status = ?
+	`, runStatusRunning).Scan(&running); err != nil {
 		return false, fmt.Errorf("count running searches: %w", err)
 	}
 	if running > 0 {
@@ -360,11 +381,12 @@ func failStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time) 
 	if _, err := conn.ExecContext(ctx, `
 		UPDATE topic_search_runs
 		SET status = 'failed',
+			stage = '',
 			completed_at = ?,
 			error = 'stale running search timed out'
-		WHERE status = 'running'
+		WHERE status = ?
 			AND started_at < ?
-	`, formatTime(now), formatTime(cutoff)); err != nil {
+	`, formatTime(now), runStatusRunning, formatTime(cutoff)); err != nil {
 		return fmt.Errorf("expire stale running searches: %w", err)
 	}
 	return nil
@@ -415,11 +437,11 @@ func upsertTopicStatus(ctx context.Context, conn *sql.DB, slug string, name stri
 	return topicID, nil
 }
 
-func createSearchRun(ctx context.Context, conn *sql.DB, topicID int64, query string, status string, now time.Time) (int64, error) {
+func createSearchRun(ctx context.Context, conn *sql.DB, topicID int64, query string, status string, stage string, now time.Time) (int64, error) {
 	result, err := conn.ExecContext(ctx, `
-		INSERT INTO topic_search_runs (topic_id, provider, query, status, started_at, completed_at)
-		VALUES (?, 'tavily', ?, ?, ?, CASE WHEN ? != 'running' THEN ? ELSE NULL END)
-	`, topicID, query, status, formatTime(now), status, formatTime(now))
+		INSERT INTO topic_search_runs (topic_id, provider, query, status, stage, started_at, completed_at)
+		VALUES (?, 'tavily', ?, ?, ?, ?, CASE WHEN ? != 'running' THEN ? ELSE NULL END)
+	`, topicID, query, status, stage, formatTime(now), status, formatTime(now))
 	if err != nil {
 		return 0, fmt.Errorf("create topic search run: %w", err)
 	}
@@ -430,10 +452,22 @@ func createSearchRun(ctx context.Context, conn *sql.DB, topicID int64, query str
 	return runID, nil
 }
 
+func updateSearchRunStage(ctx context.Context, conn *sql.DB, runID int64, stage string) error {
+	if _, err := conn.ExecContext(ctx, `
+		UPDATE topic_search_runs
+		SET stage = ?
+		WHERE id = ?
+	`, stage, runID); err != nil {
+		return fmt.Errorf("update topic search stage: %w", err)
+	}
+	return nil
+}
+
 func failRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int64, runErr error) error {
 	if _, err := conn.ExecContext(ctx, `
 		UPDATE topic_search_runs
 		SET status = 'failed',
+			stage = '',
 			completed_at = datetime('now'),
 			error = ?
 		WHERE id = ?
@@ -455,6 +489,7 @@ func completeRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID
 	if _, err := conn.ExecContext(ctx, `
 		UPDATE topic_search_runs
 		SET status = 'completed',
+			stage = '',
 			completed_at = datetime('now'),
 			result_count = ?,
 			stored_count = ?,
@@ -477,10 +512,31 @@ func completeRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID
 	return nil
 }
 
-func storeResults(ctx context.Context, conn *sql.DB, topicID int64, runID int64, results []storedResult) (int, error) {
+func storeSearchCandidates(ctx context.Context, conn *sql.DB, topicID int64, runID int64, results []storedResult) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin store search results: %w", err)
+		return fmt.Errorf("begin store search candidates: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	for _, result := range results {
+		if err := upsertSearchCandidate(ctx, tx, topicID, runID, result); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit search candidates: %w", err)
+	}
+	return nil
+}
+
+func storeReviewedResults(ctx context.Context, conn *sql.DB, topicID int64, runID int64, results []storedResult) (int, error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin store reviewed results: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -508,7 +564,7 @@ func storeResults(ctx context.Context, conn *sql.DB, topicID int64, runID int64,
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit search results: %w", err)
+		return 0, fmt.Errorf("commit reviewed results: %w", err)
 	}
 	return stored, nil
 }
@@ -559,6 +615,41 @@ func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, res
 		return 0, fmt.Errorf("read search page id: %w", err)
 	}
 	return pageID, nil
+}
+
+func upsertSearchCandidate(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, result storedResult) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO topic_search_results (
+			topic_id,
+			search_run_id,
+			title,
+			url,
+			source,
+			snippet,
+			rank,
+			reviewer_score,
+			page_type,
+			reviewer_reason,
+			accepted,
+			stored_as_page_id
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, '', '', 0, NULL)
+		ON CONFLICT(topic_id, url) DO UPDATE SET
+			search_run_id = excluded.search_run_id,
+			title = excluded.title,
+			source = excluded.source,
+			snippet = excluded.snippet,
+			rank = excluded.rank,
+			reviewer_score = NULL,
+			page_type = '',
+			reviewer_reason = '',
+			accepted = 0,
+			stored_as_page_id = NULL
+	`, topicID, runID, result.Title, result.URL, result.Source, result.Snippet, result.Rank)
+	if err != nil {
+		return fmt.Errorf("upsert search candidate %q: %w", result.URL, err)
+	}
+	return nil
 }
 
 func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, pageID sql.NullInt64, result storedResult) error {

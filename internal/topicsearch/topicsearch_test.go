@@ -217,13 +217,56 @@ func TestSearchTopicUsesReviewerToFilterResults(t *testing.T) {
 		t.Fatalf("unexpected review metadata score=%d page_type=%q accepted=%d", score, pageType, accepted)
 	}
 
-	var model string
+	var model, stage string
 	var totalTokens int
-	if err := conn.QueryRowContext(ctx, "SELECT reviewer_model, reviewer_total_tokens FROM topic_search_runs").Scan(&model, &totalTokens); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT reviewer_model, reviewer_total_tokens, stage FROM topic_search_runs").Scan(&model, &totalTokens, &stage); err != nil {
 		t.Fatalf("read review usage: %v", err)
 	}
 	if model != "gpt-5-nano-test" || totalTokens != 140 {
 		t.Fatalf("unexpected review usage model=%q total_tokens=%d", model, totalTokens)
+	}
+	if stage != "" {
+		t.Fatalf("expected completed run stage to be cleared, got %q", stage)
+	}
+}
+
+func TestSearchTopicKeepsCandidatesWhenReviewerFails(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		Provider: fakeProvider{
+			results: []SearchResult{
+				{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html", Content: "Generic types and traits."},
+				{Title: "Ownership", URL: "https://doc.rust-lang.org/stable/book/ch04-00-understanding-ownership.html", Content: "Ownership concepts."},
+			},
+		},
+		Reviewer:    fakeReviewer{err: errors.New("review unavailable")},
+		Now:         fixedTopicSearchTime,
+		MinInterval: time.Nanosecond,
+	})
+	if err == nil {
+		t.Fatal("expected reviewer error")
+	}
+
+	var topicStatus, runStatus, runStage string
+	if err := conn.QueryRowContext(ctx, "SELECT status FROM topics WHERE slug = 'rust'").Scan(&topicStatus); err != nil {
+		t.Fatalf("read topic status: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, "SELECT status, stage FROM topic_search_runs").Scan(&runStatus, &runStage); err != nil {
+		t.Fatalf("read run status: %v", err)
+	}
+	if topicStatus != "failed" || runStatus != "failed" || runStage != "" {
+		t.Fatalf("expected failed topic/run with cleared stage, got topic=%q run=%q stage=%q", topicStatus, runStatus, runStage)
+	}
+
+	var resultCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM topic_search_results WHERE reviewer_score IS NULL AND accepted = 0").Scan(&resultCount); err != nil {
+		t.Fatalf("count saved candidates: %v", err)
+	}
+	if resultCount != 2 {
+		t.Fatalf("expected two saved unreviewed candidates, got %d", resultCount)
 	}
 }
 

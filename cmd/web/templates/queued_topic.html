@@ -58,9 +58,15 @@
 <body>
   <main>
     <section>
-      <p class="status">{{.Status}}</p>
+      <p class="status">{{.StatusLabel}}</p>
       <h1>{{.Name}}</h1>
+      {{if eq .Status "searching"}}
+      <p>This topic is being processed. Refresh this page in a moment.</p>
+      {{else if eq .Status "failed"}}
+      <p>This topic could not be processed. DailyDocs can process up to 20 requested topics per day.</p>
+      {{else}}
       <p>This topic is queued. DailyDocs can process up to 20 requested topics per day.</p>
+      {{end}}
       {{if eq .Status "queued"}}
       <form method="post" action="/process-topic">
         <input type="hidden" name="topic" value="{{.Slug}}">

@@ -338,6 +338,7 @@ Unique constraint:
 - provider
 - query
 - status
+- stage
 - started_at
 - completed_at
 - result_count
@@ -364,6 +365,8 @@ Unique constraint:
 - accepted
 - stored_as_page_id
 - created_at
+
+Search results are recorded before model review. Review score, page type, reason, acceptance, and stored page linkage are updated after review completes.
 
 ## Deployment Philosophy
 

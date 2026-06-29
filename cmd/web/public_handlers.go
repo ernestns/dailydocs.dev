@@ -235,6 +235,9 @@ type topicListItem struct {
 	Slug           string
 	Name           string
 	Status         string
+	StatusLabel    string
+	RunStatus      string
+	RunStage       string
 	EvaluatedCount int
 	AcceptedCount  int
 }
@@ -252,9 +255,10 @@ type evaluationResult struct {
 }
 
 type queuedTopicView struct {
-	Slug   string
-	Name   string
-	Status string
+	Slug        string
+	Name        string
+	Status      string
+	StatusLabel string
 }
 
 func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]topicOption, error) {
@@ -302,6 +306,20 @@ func listRequestedTopics(ctx context.Context, conn *sql.DB) ([]topicListItem, er
 			t.slug,
 			t.name,
 			t.status,
+			COALESCE((
+				SELECT sr.status
+				FROM topic_search_runs sr
+				WHERE sr.topic_id = t.id
+				ORDER BY sr.started_at DESC, sr.id DESC
+				LIMIT 1
+			), '') AS run_status,
+			COALESCE((
+				SELECT sr.stage
+				FROM topic_search_runs sr
+				WHERE sr.topic_id = t.id
+				ORDER BY sr.started_at DESC, sr.id DESC
+				LIMIT 1
+			), '') AS run_stage,
 			COUNT(r.id) AS evaluated_count,
 			COALESCE(SUM(r.accepted), 0) AS accepted_count
 		FROM topics t
@@ -318,9 +336,10 @@ func listRequestedTopics(ctx context.Context, conn *sql.DB) ([]topicListItem, er
 	var topics []topicListItem
 	for rows.Next() {
 		var topic topicListItem
-		if err := rows.Scan(&topic.Slug, &topic.Name, &topic.Status, &topic.EvaluatedCount, &topic.AcceptedCount); err != nil {
+		if err := rows.Scan(&topic.Slug, &topic.Name, &topic.Status, &topic.RunStatus, &topic.RunStage, &topic.EvaluatedCount, &topic.AcceptedCount); err != nil {
 			return nil, fmt.Errorf("scan requested topic: %w", err)
 		}
+		topic.StatusLabel = topicStatusLabel(topic.Status, topic.RunStatus, topic.RunStage)
 		topics = append(topics, topic)
 	}
 	if err := rows.Err(); err != nil {
@@ -333,13 +352,32 @@ func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topic
 	var topic topicListItem
 	var topicID int64
 	if err := conn.QueryRowContext(ctx, `
-		SELECT id, slug, name, status
-		FROM topics
-		WHERE slug = ?
-			AND status != 'disabled'
-	`, slug).Scan(&topicID, &topic.Slug, &topic.Name, &topic.Status); err != nil {
+		SELECT
+			t.id,
+			t.slug,
+			t.name,
+			t.status,
+			COALESCE((
+				SELECT sr.status
+				FROM topic_search_runs sr
+				WHERE sr.topic_id = t.id
+				ORDER BY sr.started_at DESC, sr.id DESC
+				LIMIT 1
+			), ''),
+			COALESCE((
+				SELECT sr.stage
+				FROM topic_search_runs sr
+				WHERE sr.topic_id = t.id
+				ORDER BY sr.started_at DESC, sr.id DESC
+				LIMIT 1
+			), '')
+		FROM topics t
+		WHERE t.slug = ?
+			AND t.status != 'disabled'
+	`, slug).Scan(&topicID, &topic.Slug, &topic.Name, &topic.Status, &topic.RunStatus, &topic.RunStage); err != nil {
 		return topicListItem{}, nil, err
 	}
+	topic.StatusLabel = topicStatusLabel(topic.Status, topic.RunStatus, topic.RunStage)
 
 	rows, err := conn.QueryContext(ctx, `
 		SELECT
@@ -421,15 +459,42 @@ func parseTopicEvaluationsPath(path string) (string, bool) {
 
 func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string) (queuedTopicView, error) {
 	var queued queuedTopicView
+	var runStatus string
+	var runStage string
 	err := conn.QueryRowContext(ctx, `
-		SELECT slug, name, status
-		FROM topics
-		WHERE slug = ?
-	`, slug).Scan(&queued.Slug, &queued.Name, &queued.Status)
+		SELECT
+			t.slug,
+			t.name,
+			t.status,
+			COALESCE((
+				SELECT sr.status
+				FROM topic_search_runs sr
+				WHERE sr.topic_id = t.id
+				ORDER BY sr.started_at DESC, sr.id DESC
+				LIMIT 1
+			), ''),
+			COALESCE((
+				SELECT sr.stage
+				FROM topic_search_runs sr
+				WHERE sr.topic_id = t.id
+				ORDER BY sr.started_at DESC, sr.id DESC
+				LIMIT 1
+			), '')
+		FROM topics t
+		WHERE t.slug = ?
+	`, slug).Scan(&queued.Slug, &queued.Name, &queued.Status, &runStatus, &runStage)
 	if err != nil {
 		return queuedTopicView{}, fmt.Errorf("load queued topic: %w", err)
 	}
+	queued.StatusLabel = topicStatusLabel(queued.Status, runStatus, runStage)
 	return queued, nil
+}
+
+func topicStatusLabel(topicStatus string, runStatus string, runStage string) string {
+	if topicStatus == "searching" && runStatus == "running" && strings.TrimSpace(runStage) != "" {
+		return runStage
+	}
+	return topicStatus
 }
 
 func findTopic(ctx context.Context, conn *sql.DB, value string) (topicOption, bool, error) {
