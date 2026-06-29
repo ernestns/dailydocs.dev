@@ -108,7 +108,7 @@ The user visits every morning and reads that day's recommended documentation.
 
 ## Daily Reading
 
-Each topic/date pair produces exactly one reading.
+Each stored topic/date assignment maps to exactly one reading.
 
 Example:
 
@@ -153,7 +153,7 @@ Each topic has a stable reading order.
 
 Daily readings are stored in a `daily_readings` assignment table rather than recomputed forever from the current page list. This preserves historical accuracy when documentation pages are added, removed, disabled, or reordered.
 
-The application may lazily create a daily assignment on first request for a topic/date pair.
+The topic-only URL creates today's assignment when it is viewed and no assignment exists yet. Dated URLs only return readings that already have a stored assignment; missing dated assignments return not found.
 
 ## Topic Creation
 
@@ -275,7 +275,7 @@ Responsibilities:
 - topic search
 - topic request enqueueing
 - bounded search provider calls
-- daily reading assignment
+- daily reading assignment on topic-only reading views
 - rendering
 - link validation command mode
 

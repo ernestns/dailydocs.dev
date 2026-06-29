@@ -11,7 +11,7 @@ import (
 	"github.com/ernestns/daily-docs/internal/seed"
 )
 
-func TestGetDailyReadingCreatesStableAssignment(t *testing.T) {
+func TestGetDailyReadingReturnsStoredAssignment(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
 	defer conn.Close()
@@ -20,6 +20,7 @@ func TestGetDailyReadingCreatesStableAssignment(t *testing.T) {
 		{Title: "Second", URL: "https://go.dev/second", EstimatedMinutes: intPtr(8), Official: true},
 		{Title: "Third", URL: "https://go.dev/third"},
 	})
+	seedDailyReading(t, ctx, conn, "go", "1970-01-02", "Second")
 
 	got, err := GetDailyReading(ctx, conn, "go", "1970-01-02")
 	if err != nil {
@@ -35,7 +36,48 @@ func TestGetDailyReadingCreatesStableAssignment(t *testing.T) {
 		t.Fatal("expected official page")
 	}
 
-	again, err := GetDailyReading(ctx, conn, "go", "1970-01-02")
+	var assignments int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM daily_readings").Scan(&assignments); err != nil {
+		t.Fatalf("count assignments: %v", err)
+	}
+	if assignments != 1 {
+		t.Fatalf("expected one assignment, got %d", assignments)
+	}
+}
+
+func TestGetDailyReadingDoesNotCreateMissingAssignment(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	defer conn.Close()
+	importTopic(t, ctx, conn, "go", []seed.PageFile{
+		{Title: "First", URL: "https://go.dev/first"},
+		{Title: "Second", URL: "https://go.dev/second"},
+	})
+
+	if _, err := GetDailyReading(ctx, conn, "go", "1970-01-02"); !errors.Is(err, ErrReadingNotFound) {
+		t.Fatalf("expected ErrReadingNotFound, got %v", err)
+	}
+}
+
+func TestGetOrCreateDailyReadingCreatesStableAssignment(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	defer conn.Close()
+	importTopic(t, ctx, conn, "go", []seed.PageFile{
+		{Title: "First", URL: "https://go.dev/first"},
+		{Title: "Second", URL: "https://go.dev/second", EstimatedMinutes: intPtr(8), Official: true},
+		{Title: "Third", URL: "https://go.dev/third"},
+	})
+
+	got, err := GetOrCreateDailyReading(ctx, conn, "go", "1970-01-02")
+	if err != nil {
+		t.Fatalf("get daily reading: %v", err)
+	}
+	if got.Title != "Second" {
+		t.Fatalf("expected second page, got %q", got.Title)
+	}
+
+	again, err := GetOrCreateDailyReading(ctx, conn, "go", "1970-01-02")
 	if err != nil {
 		t.Fatalf("get daily reading again: %v", err)
 	}
@@ -60,6 +102,7 @@ func TestGetDailyReadingPreservesHistoricalAssignmentAfterPagesChange(t *testing
 		{Title: "WAL", URL: "https://sqlite.org/wal.html"},
 		{Title: "Indexes", URL: "https://sqlite.org/partialindex.html"},
 	})
+	seedDailyReading(t, ctx, conn, "sqlite", "1970-01-01", "WAL")
 
 	first, err := GetDailyReading(ctx, conn, "sqlite", "1970-01-01")
 	if err != nil {
@@ -97,7 +140,7 @@ func TestGetDailyReadingRejectsMissingTopicAndInvalidDate(t *testing.T) {
 	}
 }
 
-func TestGetDailyReadingRejectsTopicWithoutActivePages(t *testing.T) {
+func TestGetDailyReadingRejectsActiveTopicWithoutAssignment(t *testing.T) {
 	ctx := context.Background()
 	conn := openTestDB(t, ctx)
 	defer conn.Close()
@@ -106,7 +149,21 @@ func TestGetDailyReadingRejectsTopicWithoutActivePages(t *testing.T) {
 		t.Fatalf("insert topic: %v", err)
 	}
 
-	if _, err := GetDailyReading(ctx, conn, "rust", "2026-06-27"); !errors.Is(err, ErrNoActivePages) {
+	if _, err := GetDailyReading(ctx, conn, "rust", "2026-06-27"); !errors.Is(err, ErrReadingNotFound) {
+		t.Fatalf("expected ErrReadingNotFound, got %v", err)
+	}
+}
+
+func TestGetOrCreateDailyReadingRejectsTopicWithoutActivePages(t *testing.T) {
+	ctx := context.Background()
+	conn := openTestDB(t, ctx)
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "INSERT INTO topics (slug, name) VALUES ('rust', 'Rust')"); err != nil {
+		t.Fatalf("insert topic: %v", err)
+	}
+
+	if _, err := GetOrCreateDailyReading(ctx, conn, "rust", "2026-06-27"); !errors.Is(err, ErrNoActivePages) {
 		t.Fatalf("expected ErrNoActivePages, got %v", err)
 	}
 }
@@ -130,6 +187,15 @@ func importTopic(t *testing.T, ctx context.Context, conn *sql.DB, slug string, p
 		Pages: pages,
 	}); err != nil {
 		t.Fatalf("import topic: %v", err)
+	}
+}
+
+func seedDailyReading(t *testing.T, ctx context.Context, conn *sql.DB, slug string, date string, title string) {
+	t.Helper()
+
+	_, err := conn.ExecContext(ctx, `INSERT INTO daily_readings (topic_id, reading_date, page_id) SELECT t.id, ?, p.id FROM topics t JOIN pages p ON p.topic_id = t.id WHERE t.slug = ? AND p.title = ?`, date, slug, title)
+	if err != nil {
+		t.Fatalf("seed daily reading: %v", err)
 	}
 }
 

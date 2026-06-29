@@ -34,15 +34,24 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if date == "" {
+	createOnMissing := date == ""
+	if createOnMissing {
 		date = a.now().UTC().Format("2006-01-02")
 	}
 
-	dailyReading, err := reading.GetDailyReading(r.Context(), a.db, topic, date)
+	var dailyReading reading.Reading
+	var err error
+	if createOnMissing {
+		dailyReading, err = reading.GetOrCreateDailyReading(r.Context(), a.db, topic, date)
+	} else {
+		dailyReading, err = reading.GetDailyReading(r.Context(), a.db, topic, date)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, reading.ErrTopicNotFound), errors.Is(err, reading.ErrNoActivePages):
 			a.handleMissingTopic(w, r, topic)
+		case errors.Is(err, reading.ErrReadingNotFound):
+			http.NotFound(w, r)
 		case errors.Is(err, reading.ErrInvalidDate):
 			http.Error(w, "invalid date", http.StatusBadRequest)
 		default:

@@ -311,13 +311,22 @@ func TestReadingPageUsesTodayForTopicOnlyURL(t *testing.T) {
 	if strings.Contains(body, `/submissions`) {
 		t.Fatalf("did not expect submission link:\n%s", body)
 	}
+
+	var assignments int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM daily_readings WHERE reading_date = '2026-06-27'").Scan(&assignments); err != nil {
+		t.Fatalf("count assignments: %v", err)
+	}
+	if assignments != 1 {
+		t.Fatalf("expected today's assignment, got %d", assignments)
+	}
 }
 
-func TestDatedReadingPageCreatesAssignment(t *testing.T) {
+func TestDatedReadingPageReturnsExistingAssignment(t *testing.T) {
 	ctx := context.Background()
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
 	importWebTopic(t, ctx, conn, "go", "Go")
+	seedWebDailyReading(t, ctx, conn, "go", "1970-01-01", "Write-Ahead Logging")
 
 	handler := newTestHandler(conn)
 	response := httptest.NewRecorder()
@@ -333,6 +342,29 @@ func TestDatedReadingPageCreatesAssignment(t *testing.T) {
 	}
 	if assignments != 1 {
 		t.Fatalf("expected one assignment, got %d", assignments)
+	}
+}
+
+func TestDatedReadingPageDoesNotCreateMissingAssignment(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	importWebTopic(t, ctx, conn, "go", "Go")
+
+	handler := newTestHandler(conn)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/go/1970-01-01", nil))
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
+	}
+
+	var assignments int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM daily_readings WHERE reading_date = '1970-01-01'").Scan(&assignments); err != nil {
+		t.Fatalf("count assignments: %v", err)
+	}
+	if assignments != 0 {
+		t.Fatalf("expected no assignment, got %d", assignments)
 	}
 }
 

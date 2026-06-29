@@ -72,6 +72,15 @@ func importWebTopic(t *testing.T, ctx context.Context, conn *sql.DB, slug string
 	}
 }
 
+func seedWebDailyReading(t *testing.T, ctx context.Context, conn *sql.DB, slug string, date string, title string) {
+	t.Helper()
+
+	_, err := conn.ExecContext(ctx, `INSERT INTO daily_readings (topic_id, reading_date, page_id) SELECT t.id, ?, p.id FROM topics t JOIN pages p ON p.topic_id = t.id WHERE t.slug = ? AND p.title = ?`, date, slug, title)
+	if err != nil {
+		t.Fatalf("seed daily reading: %v", err)
+	}
+}
+
 func webIntPtr(value int) *int {
 	return &value
 }

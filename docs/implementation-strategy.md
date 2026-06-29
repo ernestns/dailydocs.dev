@@ -39,18 +39,25 @@ Avoid adding broad layers until there is a concrete need. New behavior should li
 
 ## Core Domain
 
-The web app has one core reader operation:
+The web app has two reader operations:
 
 ```text
 GetDailyReading(topic, date) -> page
+GetOrCreateDailyReading(topic, today) -> page
 ```
 
-Behavior:
+Archive lookup behavior:
 
 1. Check `daily_readings` for the topic/date pair.
 2. If present, return the assigned page.
-3. If missing, select from active pages.
-4. Insert the assignment.
+3. If missing, return not found.
+
+Topic-only behavior:
+
+1. Resolve today in UTC.
+2. Check `daily_readings` for the topic/today pair.
+3. If present, return the assigned page.
+4. If missing, select from active pages and store the assignment.
 5. Return the assigned page.
 
 This logic should stay heavily tested because it is the product.
@@ -166,7 +173,7 @@ Historical `daily_readings` rows must not be deleted.
 ```text
 GET /                         topic picker
 GET /{topic}                  today's reading page or queued state
-GET /{topic}/{date}           daily reading page
+GET /{topic}/{date}           archived daily reading page
 GET /topics/search?q=go       autocomplete endpoint
 GET /topics                   topic index
 ```
