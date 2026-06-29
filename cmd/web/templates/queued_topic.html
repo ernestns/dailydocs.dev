@@ -72,6 +72,11 @@
         <input type="hidden" name="topic" value="{{.Slug}}">
         <button type="submit">Process topic</button>
       </form>
+      {{else if eq .Status "failed"}}
+      <form method="post" action="/process-topic">
+        <input type="hidden" name="topic" value="{{.Slug}}">
+        <button type="submit">Process topic</button>
+      </form>
       {{end}}
       <p><a href="/">Search another topic</a> · <a href="/topics">All topics</a></p>
     </section>

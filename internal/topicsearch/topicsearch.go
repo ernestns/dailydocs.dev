@@ -142,7 +142,7 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 		return Result{}, err
 	}
 
-	if err := failStaleRunningSearches(ctx, conn, now); err != nil {
+	if err := ExpireStaleRunningSearches(ctx, conn, now); err != nil {
 		return Result{}, err
 	}
 	if limited, err := searchRateLimited(ctx, conn, now, minInterval); err != nil {
@@ -304,7 +304,7 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 		SELECT name
 		FROM topics
 		WHERE slug = ?
-			AND status = 'queued'
+			AND status IN ('queued', 'failed')
 	`, slug).Scan(&topic)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QueueResult{}, nil
@@ -376,9 +376,38 @@ func searchRateLimited(ctx context.Context, conn *sql.DB, now time.Time, minInte
 	return now.Sub(started) < minInterval, nil
 }
 
-func failStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time) error {
+func ExpireStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time) error {
 	cutoff := now.Add(-StaleRunTimeout)
-	if _, err := conn.ExecContext(ctx, `
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin expire stale running searches: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE topics
+		SET status = 'failed',
+			updated_at = ?
+		WHERE status = 'searching'
+			AND id IN (
+				SELECT topic_id
+				FROM topic_search_runs
+				WHERE status = ?
+					AND started_at < ?
+			)
+			AND id NOT IN (
+				SELECT topic_id
+				FROM topic_search_runs
+				WHERE status = ?
+					AND started_at >= ?
+			)
+	`, formatTime(now), runStatusRunning, formatTime(cutoff), runStatusRunning, formatTime(cutoff)); err != nil {
+		return fmt.Errorf("expire stale search topics: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE topic_search_runs
 		SET status = 'failed',
 			stage = '',
@@ -388,6 +417,9 @@ func failStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time) 
 			AND started_at < ?
 	`, formatTime(now), runStatusRunning, formatTime(cutoff)); err != nil {
 		return fmt.Errorf("expire stale running searches: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit expire stale running searches: %w", err)
 	}
 	return nil
 }

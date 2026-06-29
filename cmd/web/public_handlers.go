@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ernestns/daily-docs/internal/reading"
+	"github.com/ernestns/daily-docs/internal/topicsearch"
 )
 
 func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +302,10 @@ func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]t
 }
 
 func listRequestedTopics(ctx context.Context, conn *sql.DB) ([]topicListItem, error) {
+	if err := topicsearch.ExpireStaleRunningSearches(ctx, conn, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+
 	rows, err := conn.QueryContext(ctx, `
 		SELECT
 			t.slug,
@@ -458,6 +463,10 @@ func parseTopicEvaluationsPath(path string) (string, bool) {
 }
 
 func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string) (queuedTopicView, error) {
+	if err := topicsearch.ExpireStaleRunningSearches(ctx, conn, time.Now().UTC()); err != nil {
+		return queuedTopicView{}, err
+	}
+
 	var queued queuedTopicView
 	var runStatus string
 	var runStage string

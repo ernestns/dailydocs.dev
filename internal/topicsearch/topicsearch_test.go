@@ -476,6 +476,38 @@ func TestProcessQueuedTopicProcessesSpecificQueuedTopic(t *testing.T) {
 	}
 }
 
+func TestProcessQueuedTopicRetriesFailedTopic(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "INSERT INTO topics (slug, name, status) VALUES ('rust', 'Rust', 'failed')"); err != nil {
+		t.Fatalf("seed failed topic: %v", err)
+	}
+
+	result, err := ProcessQueuedTopic(ctx, conn, "rust", Options{
+		Provider: fakeProvider{
+			results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}},
+		},
+		Now:         fixedTopicSearchTime,
+		MinInterval: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("retry failed topic: %v", err)
+	}
+	if !result.Processed || result.Result.TopicSlug != "rust" {
+		t.Fatalf("expected rust to be retried, got %+v", result)
+	}
+
+	var status string
+	if err := conn.QueryRowContext(ctx, "SELECT status FROM topics WHERE slug = 'rust'").Scan(&status); err != nil {
+		t.Fatalf("read rust status: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("expected retried topic to become active, got %q", status)
+	}
+}
+
 func TestSearchTopicExpiresStaleRunningSearches(t *testing.T) {
 	ctx := context.Background()
 	conn := openTopicSearchTestDB(t, ctx)
@@ -506,6 +538,37 @@ func TestSearchTopicExpiresStaleRunningSearches(t *testing.T) {
 	}
 	if staleStatus != "failed" || staleError != "stale running search timed out" {
 		t.Fatalf("expected stale run to fail, got status=%q error=%q", staleStatus, staleError)
+	}
+}
+
+func TestExpireStaleRunningSearchesFailsSearchingTopic(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "INSERT INTO topics (slug, name, status) VALUES ('rust', 'Rust', 'searching')"); err != nil {
+		t.Fatalf("seed searching topic: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO topic_search_runs (topic_id, provider, query, status, stage, started_at)
+		VALUES (1, 'tavily', 'Rust docs', 'running', 'reviewing', ?)
+	`, formatTime(fixedTopicSearchTime().Add(-time.Hour))); err != nil {
+		t.Fatalf("seed stale run: %v", err)
+	}
+
+	if err := ExpireStaleRunningSearches(ctx, conn, fixedTopicSearchTime()); err != nil {
+		t.Fatalf("expire stale running searches: %v", err)
+	}
+
+	var topicStatus, runStatus, runStage string
+	if err := conn.QueryRowContext(ctx, "SELECT status FROM topics WHERE slug = 'rust'").Scan(&topicStatus); err != nil {
+		t.Fatalf("read topic status: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, "SELECT status, stage FROM topic_search_runs").Scan(&runStatus, &runStage); err != nil {
+		t.Fatalf("read run status: %v", err)
+	}
+	if topicStatus != "failed" || runStatus != "failed" || runStage != "" {
+		t.Fatalf("expected failed topic/run with cleared stage, got topic=%q run=%q stage=%q", topicStatus, runStatus, runStage)
 	}
 }
 
