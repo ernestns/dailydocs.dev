@@ -66,6 +66,7 @@ func runCommand(ctx context.Context, args []string) error {
 				APIKey:   os.Getenv("TAVILY_API_KEY"),
 				Endpoint: os.Getenv("TAVILY_ENDPOINT"),
 			},
+			Reviewer: openAIReviewerFromEnv(),
 		})
 		if err != nil {
 			return err

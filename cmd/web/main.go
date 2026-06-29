@@ -24,6 +24,7 @@ type app struct {
 	now            func() time.Time
 	searchMu       *sync.Mutex
 	searchProvider topicsearch.Provider
+	searchReviewer topicsearch.Reviewer
 }
 
 func main() {
@@ -57,12 +58,14 @@ func main() {
 			Endpoint: os.Getenv("TAVILY_ENDPOINT"),
 		}
 	}
+	searchReviewer := openAIReviewerFromEnv()
 
 	app := app{
 		db:             conn,
 		now:            func() time.Time { return time.Now().UTC() },
 		searchMu:       &sync.Mutex{},
 		searchProvider: searchProvider,
+		searchReviewer: searchReviewer,
 	}
 
 	mux := http.NewServeMux()
@@ -101,6 +104,17 @@ func main() {
 			log.Printf("server shutdown failed: %v", err)
 			os.Exit(1)
 		}
+	}
+}
+
+func openAIReviewerFromEnv() topicsearch.Reviewer {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		return nil
+	}
+	return topicsearch.OpenAIReviewer{
+		APIKey:   os.Getenv("OPENAI_API_KEY"),
+		Endpoint: os.Getenv("OPENAI_ENDPOINT"),
+		Model:    os.Getenv("OPENAI_MODEL"),
 	}
 }
 

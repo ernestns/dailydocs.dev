@@ -9,11 +9,14 @@ The MVP topic pipeline is:
 ```text
 Topic
   -> Tavily Search
+  -> GPT Review
   -> Store
   -> Display
 ```
 
-There is no GPT review step and no manual activation gate in the MVP.
+There is no manual activation gate in the MVP.
+
+The content strategy is Interesting First: official documentation is preferred when it is useful, but durable technical references can also qualify.
 
 ## Accepted Decisions
 
@@ -90,18 +93,18 @@ Topic
   -> Display
 ```
 
-### Use Tavily Search Without GPT Review For MVP
+### Use Tavily Search With Optional GPT Review
 
-Decision: use Tavily as the search provider and remove GPT from the first automated topic pipeline.
+Decision: use Tavily as the search provider and GPT-5 nano as an optional candidate reviewer.
 
-Reason: the product needs the simplest useful loop first. Search-only results may be imperfect, but they avoid the cost, latency, prompt tuning, and extra failure modes of a model review pass.
+Reason: search-only results produced too many pages about documentation, listicles, and noisy sources. A small structured review pass gives the product a better way to apply the DailyDocs quality rubric while keeping the pipeline simple.
 
 Implications:
 
 - Store the search run and returned results.
-- Convert normalized, deduplicated results into active pages.
-- Prefer official documentation through the search query where possible.
-- Add better quality review later only after observing real search output.
+- Convert normalized, deduplicated, reviewed results into active pages.
+- Store reviewer score and page type when available.
+- Fall back to deterministic ranking when `OPENAI_API_KEY` is not configured.
 - AI summaries, quizzes, tagging, and quality review are future features, not MVP requirements.
 
 ### Keep Topic Search Globally Bounded

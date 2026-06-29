@@ -30,14 +30,14 @@ func TestTavilyClientSendsSearchRequest(t *testing.T) {
 		Endpoint: server.URL,
 		Client:   server.Client(),
 	}
-	results, err := client.Search(context.Background(), "Rust official documentation", 7)
+	results, err := client.Search(context.Background(), "Rust documentation guide reference tutorial", 7)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
 	if authHeader != "Bearer test-key" {
 		t.Fatalf("unexpected auth header %q", authHeader)
 	}
-	if request.Query != "Rust official documentation" || request.MaxResults != 7 {
+	if request.Query != "Rust documentation guide reference tutorial" || request.MaxResults != 7 {
 		t.Fatalf("unexpected request: %+v", request)
 	}
 	if len(request.ExcludeDomains) == 0 {

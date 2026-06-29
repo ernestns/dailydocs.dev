@@ -99,6 +99,7 @@ func TestSearchTopicFiltersLowValueResults(t *testing.T) {
 			results: []SearchResult{
 				{Title: "Video", URL: "https://www.youtube.com/watch?v=rust"},
 				{Title: "Forum", URL: "https://www.reddit.com/r/rust/comments/example"},
+				{Title: "Social", URL: "https://m.facebook.com/rust-guide"},
 				{Title: "PDF", URL: "https://example.com/rust.pdf"},
 				{Title: "Rust Docs", URL: "https://doc.rust-lang.org/book/"},
 			},
@@ -116,6 +117,93 @@ func TestSearchTopicFiltersLowValueResults(t *testing.T) {
 	}
 	if pageCount != 1 {
 		t.Fatalf("expected only one unblocked page, got %d", pageCount)
+	}
+}
+
+func TestSearchTopicRanksInterestingPagesAheadOfGenericResults(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		Provider: fakeProvider{
+			results: []SearchResult{
+				{Title: "Rust Programming Language", URL: "https://www.rust-lang.org/", Content: "Why Rust? Rust is fast and reliable.", Score: 0.95},
+				{Title: "Why Rust Docs Are the Gold Standard", URL: "https://medium.com/example/rust-docs", Content: "Every Rust library has documentation.", Score: 0.9},
+				{Title: "The Rust Programming Language Book", URL: "https://doc.rust-lang.org/book/", Content: "Learn Rust concepts with the official book.", Score: 0.8},
+			},
+		},
+		Now:         fixedTopicSearchTime,
+		MinInterval: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("search topic: %v", err)
+	}
+
+	var firstTitle string
+	if err := conn.QueryRowContext(ctx, "SELECT title FROM pages WHERE reading_order = 1").Scan(&firstTitle); err != nil {
+		t.Fatalf("read first page: %v", err)
+	}
+	if firstTitle != "The Rust Programming Language Book" {
+		t.Fatalf("expected book first, got %q", firstTitle)
+	}
+}
+
+func TestSearchTopicUsesReviewerToFilterResults(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		Provider: fakeProvider{
+			results: []SearchResult{
+				{Title: "Rust Book", URL: "https://doc.rust-lang.org/book/", Content: "Learn Rust concepts.", Score: 0.8},
+				{Title: "Rust Listicle", URL: "https://example.com/best-rust-posts", Content: "A shallow list.", Score: 0.9},
+			},
+		},
+		Reviewer: fakeReviewer{
+			output: ReviewOutput{
+				Results: []ReviewResult{
+					{Index: 1, DailyDocsScore: 92, PageType: "guide", ShouldStore: true, Reason: "Strong conceptual guide."},
+					{Index: 2, DailyDocsScore: 25, PageType: "listicle", ShouldStore: false, Reason: "Shallow listicle."},
+				},
+				Model:        "gpt-5-nano-test",
+				InputTokens:  100,
+				OutputTokens: 40,
+				TotalTokens:  140,
+			},
+		},
+		Now:         fixedTopicSearchTime,
+		MinInterval: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("search topic: %v", err)
+	}
+
+	var pageCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages").Scan(&pageCount); err != nil {
+		t.Fatalf("count pages: %v", err)
+	}
+	if pageCount != 1 {
+		t.Fatalf("expected one reviewed page, got %d", pageCount)
+	}
+
+	var score int
+	var pageType string
+	if err := conn.QueryRowContext(ctx, "SELECT reviewer_score, page_type FROM topic_search_results WHERE title = 'Rust Book'").Scan(&score, &pageType); err != nil {
+		t.Fatalf("read review metadata: %v", err)
+	}
+	if score != 92 || pageType != "guide" {
+		t.Fatalf("unexpected review metadata score=%d page_type=%q", score, pageType)
+	}
+
+	var model string
+	var totalTokens int
+	if err := conn.QueryRowContext(ctx, "SELECT reviewer_model, reviewer_total_tokens FROM topic_search_runs").Scan(&model, &totalTokens); err != nil {
+		t.Fatalf("read review usage: %v", err)
+	}
+	if model != "gpt-5-nano-test" || totalTokens != 140 {
+		t.Fatalf("unexpected review usage model=%q total_tokens=%d", model, totalTokens)
 	}
 }
 
@@ -271,4 +359,16 @@ func (p fakeProvider) Search(context.Context, string, int) ([]SearchResult, erro
 		return nil, p.err
 	}
 	return p.results, nil
+}
+
+type fakeReviewer struct {
+	output ReviewOutput
+	err    error
+}
+
+func (r fakeReviewer) Review(context.Context, string, []ReviewCandidate) (ReviewOutput, error) {
+	if r.err != nil {
+		return ReviewOutput{}, r.err
+	}
+	return r.output, nil
 }

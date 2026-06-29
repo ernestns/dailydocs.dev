@@ -120,6 +120,7 @@ Edit `.env` and set:
 
 ```text
 TAVILY_API_KEY=your-key
+OPENAI_API_KEY=your-key
 ```
 
 Run local commands through the env wrapper:

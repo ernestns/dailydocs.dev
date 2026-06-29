@@ -96,6 +96,7 @@ func (a app) searchQueuedTopic(ctx context.Context, topic string) (bool, error) 
 	}
 	_, err := topicsearch.SearchTopic(ctx, a.db, topic, topicsearch.Options{
 		Provider: a.searchProvider,
+		Reviewer: a.searchReviewer,
 		Now:      a.now,
 	})
 	if err != nil {

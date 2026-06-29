@@ -109,7 +109,10 @@ type tavilySearchResult struct {
 
 func defaultExcludedDomains() []string {
 	return []string{
+		"facebook.com",
 		"github.com",
+		"instagram.com",
+		"news.ycombinator.com",
 		"reddit.com",
 		"stackoverflow.com",
 		"w3schools.com",

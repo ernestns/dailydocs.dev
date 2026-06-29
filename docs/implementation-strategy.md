@@ -88,19 +88,21 @@ topic name
   -> Tavily search
   -> normalize result URLs
   -> deduplicate by topic and URL
+  -> review candidates with GPT-5 nano when configured
   -> store search run
-  -> store search results
+  -> store accepted search results
   -> create active pages
 ```
 
 Tavily query goals:
 
-- prefer official documentation
+- prefer interesting documentation-like pages
+- rank official documentation as a positive signal
 - prefer standalone documentation pages
 - avoid generic marketing pages when possible
 - return enough results to seed the first daily rotation
 
-The MVP does not use GPT or manual review in the pipeline.
+GPT-5 nano reviews search candidate metadata when `OPENAI_API_KEY` is configured. Without the key, the pipeline uses deterministic ranking and filtering so local development still works.
 
 ## Search Limits
 

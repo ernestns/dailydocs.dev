@@ -6,7 +6,7 @@ Version: 0.2 (MVP)
 
 DailyDocs helps individuals and teams increase their depth of knowledge by reading for a few minutes each day.
 
-Each reading teaches something new about a topic they care about and is sourced from official documentation whenever possible.
+Each reading teaches something new about a topic they care about and is sourced from documentation and durable technical references.
 
 A DailyDocs reading is simply a URL.
 
@@ -68,16 +68,16 @@ Quality signals include:
 - Canonicality: the source is authoritative or widely accepted.
 - Uniqueness: the page provides insight that is not repeated everywhere else.
 
-### Official First
+### Interesting First
 
-Whenever possible, recommendations should come from official documentation.
+DailyDocs should recommend pages worth reading.
 
-Community resources are only used when an official source does not exist.
+Official documentation is a strong positive signal, but it is not the only signal. A great canonical guide, deep explanation, or practical reference can be better than a generic official landing page.
 
 ## Goals
 
 - Provide one reading per topic per day
-- Promote official documentation
+- Promote useful documentation and durable technical references
 - Reduce the need to search for documentation to read
 - Enable teams to learn together
 - Preserve historical daily readings
@@ -182,13 +182,16 @@ The first automated pipeline is intentionally simple:
 Topic
   -> Search provider
   -> Normalize results
-  -> Store pages
+  -> Review candidates
+  -> Store accepted pages
   -> Display daily reading
 ```
 
 Tavily is the preferred search provider.
 
-The query should favor official documentation and useful documentation pages, but search results are not manually reviewed before storage in the MVP.
+GPT-5 nano reviews candidate metadata when `OPENAI_API_KEY` is configured. The reviewer scores each candidate against the DailyDocs quality rubric and accepted pages are stored for the topic rotation.
+
+If model review is unavailable, DailyDocs falls back to deterministic ranking and filtering.
 
 Stored search results must include:
 
@@ -198,6 +201,8 @@ Stored search results must include:
 - source/domain
 - snippet or description when available
 - result rank
+- reviewer score when available
+- page type when available
 - date stored
 
 If the search provider is unavailable or returns no usable results, the topic remains visible as enqueued or failed rather than silently disappearing.
@@ -322,6 +327,10 @@ Unique constraint:
 - completed_at
 - result_count
 - stored_count
+- reviewer_model
+- reviewer_input_tokens
+- reviewer_output_tokens
+- reviewer_total_tokens
 - error
 
 ### topic_search_results
@@ -334,6 +343,9 @@ Unique constraint:
 - source
 - snippet
 - rank
+- reviewer_score
+- page_type
+- reviewer_reason
 - stored_as_page_id
 - created_at
 

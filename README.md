@@ -2,7 +2,7 @@
 
 DailyDocs helps individuals and teams build knowledge a few minutes at a time through documentation.
 
-Each topic has a small set of documentation links selected for usefulness, depth, and practical value. DailyDocs shows one reading per topic per day, sourced from official documentation whenever possible.
+Each topic has a small set of documentation links selected for usefulness, depth, and practical value. DailyDocs shows one reading per topic per day, sourced from documentation and durable technical references.
 
 Example:
 
