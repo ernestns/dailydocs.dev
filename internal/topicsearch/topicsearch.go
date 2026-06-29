@@ -50,11 +50,12 @@ type Result struct {
 }
 
 type storedResult struct {
-	Title   string
-	URL     string
-	Source  string
-	Snippet string
-	Rank    int
+	Title        string
+	URL          string
+	Source       string
+	Snippet      string
+	Rank         int
+	ReadingOrder int
 }
 
 func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) (Result, error) {
@@ -281,7 +282,12 @@ func storeResults(ctx context.Context, conn *sql.DB, topicID int64, runID int64,
 	}()
 
 	stored := 0
-	for _, result := range results {
+	nextOrder, err := nextReadingOrder(ctx, tx, topicID)
+	if err != nil {
+		return 0, err
+	}
+	for i, result := range results {
+		result.ReadingOrder = nextOrder + i
 		pageID, err := upsertPage(ctx, tx, topicID, runID, result)
 		if err != nil {
 			return 0, err
@@ -296,6 +302,21 @@ func storeResults(ctx context.Context, conn *sql.DB, topicID int64, runID int64,
 		return 0, fmt.Errorf("commit search results: %w", err)
 	}
 	return stored, nil
+}
+
+func nextReadingOrder(ctx context.Context, tx *sql.Tx, topicID int64) (int, error) {
+	var maxOrder sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT MAX(reading_order)
+		FROM pages
+		WHERE topic_id = ?
+	`, topicID).Scan(&maxOrder); err != nil {
+		return 0, fmt.Errorf("read max reading order: %w", err)
+	}
+	if !maxOrder.Valid {
+		return 1, nil
+	}
+	return int(maxOrder.Int64) + 1, nil
 }
 
 func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, result storedResult) (int64, error) {
@@ -319,7 +340,7 @@ func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, res
 			active = 1,
 			search_run_id = excluded.search_run_id,
 			updated_at = datetime('now')
-	`, topicID, result.Title, result.URL, result.Source, result.Rank, runID)
+	`, topicID, result.Title, result.URL, result.Source, result.ReadingOrder, runID)
 	if err != nil {
 		return 0, fmt.Errorf("upsert search page %q: %w", result.URL, err)
 	}

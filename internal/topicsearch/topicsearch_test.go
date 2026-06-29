@@ -89,6 +89,40 @@ func TestSearchTopicDeduplicatesResults(t *testing.T) {
 	}
 }
 
+func TestSearchTopicAppendsReadingOrderForExistingTopic(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "INSERT INTO topics (slug, name, status) VALUES ('rust', 'Rust', 'active')"); err != nil {
+		t.Fatalf("seed existing topic: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO pages (topic_id, title, url, reading_order) VALUES (1, 'Existing', 'https://example.com/existing', 1)"); err != nil {
+		t.Fatalf("seed existing page: %v", err)
+	}
+
+	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		Provider: fakeProvider{
+			results: []SearchResult{
+				{Title: "Rust Book", URL: "https://doc.rust-lang.org/book/"},
+			},
+		},
+		Now:         fixedTopicSearchTime,
+		MinInterval: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("search topic: %v", err)
+	}
+
+	var readingOrder int
+	if err := conn.QueryRowContext(ctx, "SELECT reading_order FROM pages WHERE title = 'Rust Book'").Scan(&readingOrder); err != nil {
+		t.Fatalf("read reading order: %v", err)
+	}
+	if readingOrder != 2 {
+		t.Fatalf("expected appended reading order 2, got %d", readingOrder)
+	}
+}
+
 func TestSearchTopicRecordsProviderFailure(t *testing.T) {
 	ctx := context.Background()
 	conn := openTopicSearchTestDB(t, ctx)
