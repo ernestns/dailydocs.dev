@@ -31,6 +31,7 @@ func newTestHandlerWithProvider(conn *sql.DB, provider topicsearch.Provider) htt
 	mux.HandleFunc("/topics", app.topicsHandler)
 	mux.HandleFunc("/topics/", app.topicEvaluationsHandler)
 	mux.HandleFunc("/topics/search", app.searchTopicsHandler)
+	mux.HandleFunc("/process-topic", app.processTopicHandler)
 	mux.HandleFunc("/read", app.generateReadingHandler)
 	mux.HandleFunc("/", app.routeHandler)
 	return mux

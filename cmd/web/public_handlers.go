@@ -127,6 +127,23 @@ func (a app) topicEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
 	}{Topic: topic, Results: results})
 }
 
+func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	slug := strings.TrimSpace(r.FormValue("topic"))
+	if !topicPathPattern.MatchString(slug) {
+		http.Error(w, "invalid topic", http.StatusBadRequest)
+		return
+	}
+
+	a.processNextQueuedTopic(r.Context())
+	http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
+}
+
 func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)

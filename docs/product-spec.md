@@ -88,7 +88,7 @@ User visits `dailydocs.dev`, searches for a topic, then clicks `View Reading`.
 
 If the topic exists, DailyDocs shows today's reading.
 
-If the topic does not exist, DailyDocs creates an enqueued topic request. A background worker processes queued topics.
+If the topic does not exist, DailyDocs creates an enqueued topic request. A public action can process queued topics.
 
 ```text
 Topic
@@ -164,14 +164,14 @@ When a missing topic is requested:
 1. Normalize the topic into a slug.
 2. Create or reuse a topic request record.
 3. Show that the request is enqueued.
-4. The background worker processes queued topics.
+4. Show a process action for queued topics.
 5. Store evaluated candidates and accepted pages.
 6. Display the first available reading once accepted pages exist.
 
-Initial worker limit:
+Initial processing limit:
 
 - one topic search at a time globally
-- process at most 20 queued topics per UTC day
+- process at most 20 topics per UTC day
 
 The MVP has no manual activation gate.
 

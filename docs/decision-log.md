@@ -79,7 +79,7 @@ Implications:
 
 - Missing-topic search should offer a topic request.
 - The request is visible as queued.
-- A background worker processes queued topics.
+- A public process action handles queued topics.
 - Evaluated search results are stored, and accepted results become active pages.
 - There is no manual activation gate in the MVP.
 - Existing documentation URL submission, source, candidate, and admin activation paths are retired.
@@ -109,19 +109,19 @@ Implications:
 - Fall back to deterministic ranking when `OPENAI_API_KEY` is not configured.
 - AI summaries, quizzes, tagging, and quality review are future features, not MVP requirements.
 
-### Process Queued Topics In The App
+### Process Queued Topics Manually
 
-Decision: the MVP runs a small in-process worker that processes queued topics up to a daily cap.
+Decision: the MVP exposes a public process action that processes the oldest queued topic up to a daily cap.
 
-Reason: queued topics should not depend on a future page visit to be processed. A daily cap directly controls cost and abuse. Keeping the worker inside the existing Go app preserves the simple single-binary deployment model.
+Reason: manual processing keeps the system explicit and avoids a background worker. A daily cap directly controls cost and abuse.
 
 Implications:
 
 - Missing-topic requests only enqueue.
-- The worker owns Tavily/OpenAI processing.
-- Process at most 20 queued topics per UTC day.
+- The process action owns Tavily/OpenAI processing.
+- Process at most 20 topics per UTC day.
 - If the daily cap has been reached, keep remaining topics queued.
-- The UI should show that the request has been enqueued.
+- The UI should show that the request has been enqueued and can be processed.
 - No retry policy exists yet.
 - Per-user rate limiting can wait until there is evidence the daily cap is insufficient.
 

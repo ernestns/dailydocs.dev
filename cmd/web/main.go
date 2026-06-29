@@ -19,10 +19,7 @@ import (
 
 var topicPathPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
-const (
-	topicWorkerInterval   = time.Minute
-	topicWorkerDailyLimit = 20
-)
+const topicProcessingDailyLimit = 20
 
 type app struct {
 	db             *sql.DB
@@ -78,6 +75,7 @@ func main() {
 	mux.HandleFunc("/topics", app.topicsHandler)
 	mux.HandleFunc("/topics/", app.topicEvaluationsHandler)
 	mux.HandleFunc("/topics/search", app.searchTopicsHandler)
+	mux.HandleFunc("/process-topic", app.processTopicHandler)
 	mux.HandleFunc("/read", app.generateReadingHandler)
 	mux.HandleFunc("/", app.routeHandler)
 
@@ -92,14 +90,6 @@ func main() {
 		log.Printf("starting DailyDocs web server addr=%s", addr)
 		errs <- server.ListenAndServe()
 	}()
-
-	workerCtx, stopWorker := context.WithCancel(context.Background())
-	defer stopWorker()
-	if app.searchProvider != nil {
-		go app.runTopicWorker(workerCtx, 10*time.Second, topicWorkerInterval)
-	} else {
-		log.Printf("topic worker disabled: TAVILY_API_KEY is not configured")
-	}
 
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
@@ -121,33 +111,6 @@ func main() {
 	}
 }
 
-func (a app) runTopicWorker(ctx context.Context, initialDelay time.Duration, interval time.Duration) {
-	if interval <= 0 {
-		interval = topicWorkerInterval
-	}
-	if initialDelay > 0 {
-		timer := time.NewTimer(initialDelay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-	}
-
-	a.processNextQueuedTopic(ctx)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			a.processNextQueuedTopic(ctx)
-		}
-	}
-}
-
 func (a app) processNextQueuedTopic(ctx context.Context) {
 	if a.searchProvider == nil {
 		return
@@ -161,20 +124,20 @@ func (a app) processNextQueuedTopic(ctx context.Context) {
 		Reviewer:    a.searchReviewer,
 		Now:         a.now,
 		MinInterval: time.Nanosecond,
-		DailyLimit:  topicWorkerDailyLimit,
+		DailyLimit:  topicProcessingDailyLimit,
 	})
 	if err != nil {
 		if result.Processed {
-			log.Printf("topic worker failed topic=%s error=%v", result.Result.TopicSlug, err)
+			log.Printf("topic processor failed topic=%s error=%v", result.Result.TopicSlug, err)
 			return
 		}
-		log.Printf("topic worker failed: %v", err)
+		log.Printf("topic processor failed: %v", err)
 		return
 	}
 	if result.Processed {
-		log.Printf("topic worker processed topic=%s status=%s results=%d stored=%d", result.Result.TopicSlug, result.Result.Status, result.Result.ResultCount, result.Result.StoredCount)
+		log.Printf("topic processor processed topic=%s status=%s results=%d stored=%d", result.Result.TopicSlug, result.Result.Status, result.Result.ResultCount, result.Result.StoredCount)
 	} else if result.DailyLimitReached {
-		log.Printf("topic worker daily limit reached limit=%d", topicWorkerDailyLimit)
+		log.Printf("topic processor daily limit reached limit=%d", topicProcessingDailyLimit)
 	}
 }
 

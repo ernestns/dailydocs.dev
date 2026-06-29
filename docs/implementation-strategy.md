@@ -74,12 +74,12 @@ GET /{topic}
   -> show queued state
 ```
 
-The UI should make it clear that the request is enqueued. Topic processing happens in the background worker.
+The UI should make it clear that the request is enqueued. Topic processing happens when someone clicks the process action.
 
-Worker flow:
+Manual processing flow:
 
 ```text
-poll regularly
+POST /process-topic
   -> find oldest queued topic
   -> stop if 20 topics have been processed today
   -> run search pipeline
@@ -115,14 +115,14 @@ Every reviewed candidate is stored in `topic_search_results`. Only accepted cand
 
 ## Search Limits
 
-Initial worker limits:
+Initial processing limits:
 
 - one topic search at a time globally
-- process at most 20 queued topics per UTC day
+- process at most 20 topics per UTC day
 - bounded provider timeout
 - bounded provider result count
 
-If the worker is disabled because `TAVILY_API_KEY` is missing, topics remain queued.
+If `TAVILY_API_KEY` is missing, topics remain queued.
 
 ## Data Model
 

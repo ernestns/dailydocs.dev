@@ -38,6 +38,18 @@
       font-size: 1.05rem;
       line-height: 1.6;
     }
+    form {
+      margin: 0 0 1.5rem;
+    }
+    button {
+      padding: 0.75rem 1rem;
+      border: 0;
+      border-radius: 6px;
+      font: inherit;
+      color: #ffffff;
+      background: #1f2933;
+      cursor: pointer;
+    }
     a {
       color: #1f2933;
     }
@@ -48,7 +60,13 @@
     <section>
       <p class="status">{{.Status}}</p>
       <h1>{{.Name}}</h1>
-      <p>This topic is queued. DailyDocs processes up to 20 requested topics per day before they appear in the daily rotation.</p>
+      <p>This topic is queued. DailyDocs can process up to 20 requested topics per day.</p>
+      {{if eq .Status "queued"}}
+      <form method="post" action="/process-topic">
+        <input type="hidden" name="topic" value="{{.Slug}}">
+        <button type="submit">Process topic</button>
+      </form>
+      {{end}}
       <p><a href="/">Search another topic</a> · <a href="/topics">All topics</a></p>
     </section>
   </main>
