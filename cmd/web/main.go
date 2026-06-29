@@ -9,17 +9,21 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ernestns/daily-docs/internal/db"
+	"github.com/ernestns/daily-docs/internal/topicsearch"
 )
 
 var topicPathPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 type app struct {
-	db  *sql.DB
-	now func() time.Time
+	db             *sql.DB
+	now            func() time.Time
+	searchMu       *sync.Mutex
+	searchProvider topicsearch.Provider
 }
 
 func main() {
@@ -46,9 +50,19 @@ func main() {
 	}
 	defer conn.Close()
 
+	var searchProvider topicsearch.Provider
+	if os.Getenv("TAVILY_API_KEY") != "" {
+		searchProvider = topicsearch.TavilyClient{
+			APIKey:   os.Getenv("TAVILY_API_KEY"),
+			Endpoint: os.Getenv("TAVILY_ENDPOINT"),
+		}
+	}
+
 	app := app{
-		db:  conn,
-		now: func() time.Time { return time.Now().UTC() },
+		db:             conn,
+		now:            func() time.Time { return time.Now().UTC() },
+		searchMu:       &sync.Mutex{},
+		searchProvider: searchProvider,
 	}
 
 	mux := http.NewServeMux()

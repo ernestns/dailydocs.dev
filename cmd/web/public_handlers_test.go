@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ernestns/daily-docs/internal/topicsearch"
 )
 
 func TestHomePageListsTopics(t *testing.T) {
@@ -120,6 +123,57 @@ func TestGenerateReadingQueuesMissingTopic(t *testing.T) {
 	}
 	if status != "queued" {
 		t.Fatalf("expected queued topic, got %q", status)
+	}
+}
+
+func TestGenerateReadingSearchesMissingTopicWhenProviderExists(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+
+	handler := newTestHandlerWithProvider(conn, webFakeProvider{
+		results: []topicsearch.SearchResult{
+			{Title: "Rust Book", URL: "https://doc.rust-lang.org/book/"},
+		},
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/read?topic=Rust", nil))
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", response.Code)
+	}
+	if location := response.Header().Get("Location"); location != "/rust" {
+		t.Fatalf("expected redirect to /rust, got %q", location)
+	}
+
+	var topicStatus string
+	var pageCount int
+	if err := conn.QueryRowContext(ctx, "SELECT status FROM topics WHERE slug = 'rust'").Scan(&topicStatus); err != nil {
+		t.Fatalf("read topic status: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages").Scan(&pageCount); err != nil {
+		t.Fatalf("count pages: %v", err)
+	}
+	if topicStatus != "active" || pageCount != 1 {
+		t.Fatalf("expected active topic with one page, got status=%q pages=%d", topicStatus, pageCount)
+	}
+}
+
+func TestMissingTopicPageShowsFailedSearch(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+
+	handler := newTestHandlerWithProvider(conn, webFakeProvider{err: errors.New("search unavailable")})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "failed") {
+		t.Fatalf("expected failed state in body:\n%s", body)
 	}
 }
 
@@ -277,4 +331,16 @@ func TestTopicsPageRequiresGet(t *testing.T) {
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", response.Code)
 	}
+}
+
+type webFakeProvider struct {
+	results []topicsearch.SearchResult
+	err     error
+}
+
+func (p webFakeProvider) Search(context.Context, string, int) ([]topicsearch.SearchResult, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return p.results, nil
 }

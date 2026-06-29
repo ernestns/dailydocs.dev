@@ -5,17 +5,25 @@ import (
 	"database/sql"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ernestns/daily-docs/internal/db"
 	"github.com/ernestns/daily-docs/internal/seed"
+	"github.com/ernestns/daily-docs/internal/topicsearch"
 )
 
 func newTestHandler(conn *sql.DB) http.Handler {
+	return newTestHandlerWithProvider(conn, nil)
+}
+
+func newTestHandlerWithProvider(conn *sql.DB, provider topicsearch.Provider) http.Handler {
 	app := app{
-		db:  conn,
-		now: func() time.Time { return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC) },
+		db:             conn,
+		now:            func() time.Time { return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC) },
+		searchMu:       &sync.Mutex{},
+		searchProvider: provider,
 	}
 
 	mux := http.NewServeMux()
