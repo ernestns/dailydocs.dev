@@ -170,7 +170,7 @@ dailydocs import-file topics/sqlite.yaml
 dailydocs validate-links
 ```
 
-Expected next command:
+Current topic-search command:
 
 ```sh
 dailydocs search-topic rust
