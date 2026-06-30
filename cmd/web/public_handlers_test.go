@@ -308,6 +308,15 @@ func TestReadingPageUsesTodayForTopicOnlyURL(t *testing.T) {
 	if !strings.Contains(body, "Write-Ahead Logging") {
 		t.Fatalf("expected reading title in body:\n%s", body)
 	}
+	if !strings.Contains(body, `class="reading-link" href="https://sqlite.org/wal.html"`) {
+		t.Fatalf("expected reading content to link to source:\n%s", body)
+	}
+	if !strings.Contains(body, `class="home-link" href="/"`) {
+		t.Fatalf("expected home link:\n%s", body)
+	}
+	if strings.Contains(body, `href="/topics"`) {
+		t.Fatalf("did not expect all topics link:\n%s", body)
+	}
 	if strings.Contains(body, `/submissions`) {
 		t.Fatalf("did not expect submission link:\n%s", body)
 	}
