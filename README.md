@@ -1,33 +1,21 @@
-# DailyDocs
+# [dailydocs.dev](https://dailydocs.dev/)
 
-DailyDocs helps individuals and teams build knowledge a few minutes at a time through documentation.
+DailyDocs helps individuals and teams build knowledge a few minutes at a time by reading one quality link each day.
 
-Each topic has a small set of documentation links selected for usefulness, depth, and practical value. DailyDocs shows one reading per topic per day, sourced from documentation and durable technical references.
+Each topic points to a page selected for its quality, depth, and practical value.
 
 Example:
 
 ```text
-https://dailydocs.dev/go
+https://dailydocs.dev/rust
 ```
 
-That URL resolves to today's Go reading. A dated URL provides a stable historical reading:
+That URL resolves to today's Rust reading.
+
+To revisit a previous reading, use a dated URL:
 
 ```text
 https://dailydocs.dev/go/2026-06-26
 ```
 
-No accounts. No setup. The URL is the reading.
-
-## Documentation
-
-- [Product specification](docs/product-spec.md)
-- [Implementation strategy](docs/implementation-strategy.md)
-- [Decision log](docs/decision-log.md)
-
-## Deployment
-
-Fresh Ubuntu VPS setup starts from:
-
-```sh
-scripts/bootstrap-ubuntu.sh
-```
+No accounts. No setup. Just open the link and read.
