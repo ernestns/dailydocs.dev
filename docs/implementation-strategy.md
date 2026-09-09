@@ -77,9 +77,11 @@ When a user requests a missing topic:
 
 ```text
 GET /{topic}
+  -> show an explicit request action without creating data
+POST /read (topic form)
   -> create queued topic
   -> start processing when allowed
-  -> show reading or status state
+  -> redirect to reading or status state
 ```
 
 The UI should make it clear when the request remains queued, is processing, has failed, or is ready. A process action is available for queued and failed topics.
@@ -87,7 +89,7 @@ The UI should make it clear when the request remains queued, is processing, has 
 Processing flow:
 
 ```text
-request or POST /process-topic
+POST /read or POST /process-topic
   -> start processing the requested queued or failed topic in the background
   -> stop if 20 topics have been processed today
   -> run search pipeline
@@ -100,14 +102,17 @@ Initial pipeline:
 
 ```text
 topic name
-  -> Tavily search
+  -> plan senior-level subtopics with a strong OpenAI model when configured
+  -> Tavily searches for focused official-documentation queries
   -> normalize result URLs
   -> deduplicate by topic and URL
-  -> review candidates with GPT-5 nano when configured
+  -> review candidates in batches with GPT-5 nano when configured
   -> store search run
   -> store evaluated search results
   -> create active pages for accepted results
 ```
+
+The planner generates retrieval intents, not accepted facts. Its output is used to split a broad topic into specific features, APIs, frameworks, internals, or capabilities that should have standalone documentation. Tavily remains the grounding layer for URLs.
 
 Tavily query goals:
 
@@ -117,9 +122,13 @@ Tavily query goals:
 - avoid generic marketing pages when possible
 - return enough results to seed the first daily rotation
 
-GPT-5 nano reviews search candidate metadata when `OPENAI_API_KEY` is configured. Without the key, the pipeline uses deterministic ranking and filtering so local development still works.
+OpenAI topic planning uses a stronger model by default, configured with `OPENAI_PLANNER_MODEL`. GPT-5 nano reviews search candidate metadata when `OPENAI_API_KEY` is configured. Without the key, the pipeline uses deterministic ranking and filtering so local development still works.
 
-Every reviewed candidate is stored in `topic_search_results`. Only accepted candidates become active `pages`.
+All candidates are stored in `topic_search_results`.
+Only accepted candidates become active `pages`.
+Candidates omitted by the reviewer retain a NULL score and are displayed as Not reviewed, while valid reviewed candidates remain usable.
+Duplicate or unknown reviewer indices fail review instead of publishing ambiguous decisions.
+See [generation-quality.md](generation-quality.md) for the measured baseline, URL identity rules, and bounded evaluation procedure.
 
 ## Search Limits
 
@@ -172,7 +181,9 @@ Historical `daily_readings` rows must not be deleted.
 
 ```text
 GET /                         topic picker
-GET /{topic}                  today's reading page or queued state
+GET /{topic}                  today's reading, status, or explicit request action
+GET /read?topic=...            lookup and redirect only
+POST /read                    explicitly request/generate a topic
 GET /{topic}/{date}           archived daily reading page
 GET /topics/search?q=go       autocomplete endpoint
 GET /topics                   topic index

@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const DefaultTavilyEndpoint = "https://api.tavily.com/search"
+const (
+	DefaultTavilyEndpoint = "https://api.tavily.com/search"
+	tavilyMaxResults      = 20
+)
 
 type TavilyClient struct {
 	APIKey   string
@@ -20,6 +23,10 @@ type TavilyClient struct {
 }
 
 func (c TavilyClient) Search(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	return c.SearchWithRequest(ctx, SearchRequest{Query: query, MaxResults: maxResults})
+}
+
+func (c TavilyClient) SearchWithRequest(ctx context.Context, searchRequest SearchRequest) ([]SearchResult, error) {
 	if strings.TrimSpace(c.APIKey) == "" {
 		return nil, errors.New("TAVILY_API_KEY is required")
 	}
@@ -31,12 +38,16 @@ func (c TavilyClient) Search(ctx context.Context, query string, maxResults int) 
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	maxResults := searchRequest.MaxResults
 	if maxResults < 1 {
 		maxResults = DefaultMaxResults
 	}
+	if maxResults > tavilyMaxResults {
+		maxResults = tavilyMaxResults
+	}
 
 	body, err := json.Marshal(tavilySearchRequest{
-		Query:             query,
+		Query:             strings.TrimSpace(searchRequest.Query),
 		SearchDepth:       "basic",
 		Topic:             "general",
 		MaxResults:        maxResults,
@@ -45,6 +56,7 @@ func (c TavilyClient) Search(ctx context.Context, query string, maxResults int) 
 		IncludeImages:     false,
 		IncludeFavicon:    false,
 		IncludeUsage:      true,
+		IncludeDomains:    sanitizeDomains(searchRequest.IncludeDomains),
 		ExcludeDomains:    defaultExcludedDomains(),
 	})
 	if err != nil {
@@ -92,6 +104,7 @@ type tavilySearchRequest struct {
 	IncludeImages     bool     `json:"include_images"`
 	IncludeFavicon    bool     `json:"include_favicon"`
 	IncludeUsage      bool     `json:"include_usage"`
+	IncludeDomains    []string `json:"include_domains,omitempty"`
 	ExcludeDomains    []string `json:"exclude_domains,omitempty"`
 }
 

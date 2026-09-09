@@ -26,6 +26,7 @@ type app struct {
 	now             func() time.Time
 	searchMu        *sync.Mutex
 	searchProvider  topicsearch.Provider
+	searchPlanner   topicsearch.Planner
 	searchReviewer  topicsearch.Reviewer
 	asyncProcessing bool
 }
@@ -61,6 +62,7 @@ func main() {
 			Endpoint: os.Getenv("TAVILY_ENDPOINT"),
 		}
 	}
+	searchPlanner := openAIPlannerFromEnv()
 	searchReviewer := openAIReviewerFromEnv()
 
 	app := app{
@@ -68,6 +70,7 @@ func main() {
 		now:             func() time.Time { return time.Now().UTC() },
 		searchMu:        &sync.Mutex{},
 		searchProvider:  searchProvider,
+		searchPlanner:   searchPlanner,
 		searchReviewer:  searchReviewer,
 		asyncProcessing: true,
 	}
@@ -123,6 +126,7 @@ func (a app) processQueuedTopic(ctx context.Context, slug string) {
 	}
 	opts := topicsearch.Options{
 		Provider:    a.searchProvider,
+		Planner:     a.searchPlanner,
 		Reviewer:    a.searchReviewer,
 		Now:         a.now,
 		MinInterval: time.Nanosecond,
@@ -153,11 +157,23 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 		return true
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 		defer cancel()
 		a.processQueuedTopic(ctx, slug)
 	}()
 	return true
+}
+
+func openAIPlannerFromEnv() topicsearch.Planner {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		return nil
+	}
+	return topicsearch.OpenAITopicPlanner{
+		APIKey:          os.Getenv("OPENAI_API_KEY"),
+		Endpoint:        os.Getenv("OPENAI_ENDPOINT"),
+		Model:           os.Getenv("OPENAI_PLANNER_MODEL"),
+		ReasoningEffort: os.Getenv("OPENAI_PLANNER_REASONING_EFFORT"),
+	}
 }
 
 func openAIReviewerFromEnv() topicsearch.Reviewer {

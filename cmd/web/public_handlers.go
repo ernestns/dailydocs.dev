@@ -49,6 +49,10 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, reading.ErrTopicNotFound), errors.Is(err, reading.ErrNoActivePages):
+			if !createOnMissing {
+				http.NotFound(w, r)
+				return
+			}
 			a.handleMissingTopic(w, r, topic)
 		case errors.Is(err, reading.ErrReadingNotFound):
 			http.NotFound(w, r)
@@ -65,27 +69,22 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic string) {
-	queued, err := a.queueTopic(r.Context(), topic)
+	queued, err := loadQueuedTopic(r.Context(), a.db, topic)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		renderTemplate(w, queuedTopicTemplate, queuedTopicView{
+			Slug: topic, Name: displayTopicName(topic, topic), Status: "missing",
+			StatusLabel: "Not requested yet",
+		})
+		return
+	}
 	if err != nil {
-		log.Printf("queue topic failed: %v", err)
+		log.Printf("load topic status failed: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-
-	started := false
-	if queued.Status == "queued" {
-		started = a.processQueuedTopicAsync(queued.Slug)
-	}
-	updated, err := loadQueuedTopic(r.Context(), a.db, queued.Slug)
-	if err != nil {
-		log.Printf("load queued topic after starting processor failed: %v", err)
-		renderTemplate(w, queuedTopicTemplate, queued)
-		return
-	}
-	if started && updated.Status == "queued" {
-		updated = processingTopicView(updated)
-	}
-	renderTemplate(w, queuedTopicTemplate, updated)
+	renderTemplate(w, queuedTopicTemplate, queued)
 }
 
 func (a app) homeHandler(w http.ResponseWriter, r *http.Request) {
@@ -177,14 +176,17 @@ func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	topic := strings.TrimSpace(r.URL.Query().Get("topic"))
-	if topic == "" {
+	if r.Method == http.MethodPost {
+		topic = strings.TrimSpace(r.PostFormValue("topic"))
+	}
+	if slugFromTopicName(topic) == "" {
 		http.Error(w, "invalid topic", http.StatusBadRequest)
 		return
 	}
@@ -196,6 +198,10 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
+		if r.Method == http.MethodGet {
+			http.Redirect(w, r, "/"+slugFromTopicName(topic), http.StatusSeeOther)
+			return
+		}
 		queued, queueErr := a.queueTopic(r.Context(), topic)
 		if queueErr != nil {
 			log.Printf("queue topic failed: %v", queueErr)
@@ -296,6 +302,7 @@ type evaluationResult struct {
 	PageType       string
 	ReviewerReason string
 	Accepted       bool
+	Reviewed       bool
 }
 
 type queuedTopicView struct {
@@ -437,6 +444,7 @@ func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topic
 			snippet,
 			rank,
 			COALESCE(reviewer_score, 0),
+			reviewer_score IS NOT NULL,
 			page_type,
 			reviewer_reason,
 			accepted
@@ -453,7 +461,7 @@ func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topic
 	for rows.Next() {
 		var result evaluationResult
 		var accepted int
-		if err := rows.Scan(&result.Title, &result.URL, &result.Source, &result.Snippet, &result.Rank, &result.ReviewerScore, &result.PageType, &result.ReviewerReason, &accepted); err != nil {
+		if err := rows.Scan(&result.Title, &result.URL, &result.Source, &result.Snippet, &result.Rank, &result.ReviewerScore, &result.Reviewed, &result.PageType, &result.ReviewerReason, &accepted); err != nil {
 			return topicListItem{}, nil, fmt.Errorf("scan topic evaluation: %w", err)
 		}
 		result.Accepted = accepted == 1
@@ -522,6 +530,10 @@ func parseTopicStatusPath(path string) (string, bool) {
 }
 
 func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string) (queuedTopicView, error) {
+	var exists int
+	if err := conn.QueryRowContext(ctx, "SELECT 1 FROM topics WHERE slug = ?", slug).Scan(&exists); err != nil {
+		return queuedTopicView{}, fmt.Errorf("find queued topic: %w", err)
+	}
 	if err := topicsearch.ExpireStaleRunningSearches(ctx, conn, time.Now().UTC()); err != nil {
 		return queuedTopicView{}, err
 	}

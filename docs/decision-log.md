@@ -79,7 +79,7 @@ Implications:
 
 - Missing-topic search should offer a topic request.
 - The request is visible as queued.
-- The request path starts processing asynchronously when allowed.
+- An explicit POST request starts processing asynchronously when allowed; ordinary URL visits do not request topics.
 - A public process action handles topics that remain queued or failed.
 - Evaluated search results are stored, and accepted results become active pages.
 - There is no manual activation gate in the MVP.
@@ -110,6 +110,18 @@ Implications:
 - Fall back to deterministic ranking when `OPENAI_API_KEY` is not configured.
 - AI summaries, quizzes, tagging, and quality review are future features, not MVP requirements.
 
+### Plan Topic Searches Before Retrieval
+
+Decision: when OpenAI is configured, use a stronger planner model before Tavily to generate focused senior-level subtopics and search queries.
+
+Reason: one broad Tavily query tends to find homepages, hubs, and shallow overview pages. Planning turns a broad topic into specific retrieval intents while Tavily remains the grounding layer for actual URLs.
+
+Implications:
+
+- The planner output is not trusted as page data.
+- Tavily searches remain bounded per query.
+- GPT-5 nano remains the cheaper validation and ranking step.
+
 ### Process Topic Requests Asynchronously
 
 Decision: the MVP starts processing a newly requested topic asynchronously and exposes a public process action for topics that remain queued or failed.
@@ -118,13 +130,24 @@ Reason: processing can take several seconds. Returning a status page immediately
 
 Implications:
 
-- Missing-topic requests enqueue, then start Tavily/OpenAI processing in the background.
+- Explicit POST topic requests enqueue, then start Tavily/OpenAI processing in the background.
 - The process action also starts background Tavily/OpenAI processing.
 - Process at most 20 topics per UTC day.
 - If the daily cap has been reached, keep remaining topics queued.
 - The UI shows queued/searching/reviewing/storing/failed/active status and updates the status panel with Datastar.
 - Failed topics can be retried manually.
 - Per-user rate limiting can wait until there is evidence the daily cap is insufficient.
+
+### Require An Explicit Topic Generation Request
+
+Decision: only a submitted topic form (POST `/read`) creates a missing topic and starts discovery.
+GET topic URLs and GET `/read` remain lookup paths; an unknown topic URL offers a request action without enqueueing.
+Dated unknown URLs return not found.
+
+Reason: the public catalog accumulated scanner-like URL paths because arbitrary GET requests created topics and spent the shared daily processing budget.
+This preserves the simple request flow without accounts or topic-name censorship.
+Existing active daily-reading assignments and explicit queued/failed retries remain supported.
+No existing catalog data is deleted by this change.
 
 ### Deprioritize Scheduled Backups
 

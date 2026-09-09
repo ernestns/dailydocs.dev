@@ -88,7 +88,8 @@ User visits `dailydocs.dev`, searches for a topic, then clicks `View Reading`.
 
 If the topic exists, DailyDocs shows today's reading.
 
-If the topic does not exist, DailyDocs creates an enqueued topic request and starts processing in the background when allowed by the daily cap. A public action can process topics that remain queued or failed.
+Submitting the topic form explicitly requests a missing topic and starts processing in the background when allowed by the daily cap.
+Visiting an unknown topic URL only shows a request action and does not create a topic or start generation. A public action can process topics that remain queued or failed.
 
 ```text
 Topic
@@ -159,13 +160,13 @@ The topic-only URL creates today's assignment when it is viewed and no assignmen
 
 Missing topics are requested by topic name only. Users are not asked to provide a documentation URL.
 
-When a missing topic is requested:
+When a missing topic is explicitly requested with POST `/read`:
 
 1. Normalize the topic into a slug.
 2. Create or reuse a topic request record.
 3. Start processing in the background when configuration and daily cap allow it.
 4. Show a process action for topics that remain queued or failed.
-5. Store evaluated candidates and accepted pages.
+5. Store candidates, available review decisions, and accepted pages.
 6. Display the first available reading once accepted pages exist.
 
 Initial processing limit:
@@ -181,6 +182,7 @@ The first automated pipeline is intentionally simple:
 
 ```text
 Topic
+  -> Optional subtopic planner
   -> Search provider
   -> Normalize results
   -> Review candidates
@@ -191,7 +193,7 @@ Topic
 
 Tavily is the preferred search provider.
 
-GPT-5 nano reviews candidate metadata when `OPENAI_API_KEY` is configured. The reviewer scores each candidate against the DailyDocs quality rubric. Every reviewed candidate is stored for observability, while only accepted candidates are stored as pages for the topic rotation.
+When OpenAI is configured, DailyDocs first uses a stronger model to turn a broad topic into senior-level retrieval intents, then searches Tavily for documentation pages for those intents. GPT-5 nano reviews candidate metadata against the DailyDocs quality rubric. Every reviewed candidate is stored for observability, while only accepted candidates are stored as pages for the topic rotation.
 
 If model review is unavailable, DailyDocs falls back to deterministic ranking and filtering.
 
@@ -218,9 +220,9 @@ DailyDocs publicly shows:
 - requested topics
 - topic status
 - accepted page count
-- evaluated candidate count
-- evaluated webpages for each topic
-- reviewer score, page type, reason, and accepted/rejected decision
+- candidate count
+- discovered webpages for each topic
+- reviewer score, page type, reason, and accepted/rejected decision; candidates without a review are labeled Not reviewed
 
 ## Functional Requirements
 

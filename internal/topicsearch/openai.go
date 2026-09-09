@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	DefaultOpenAIEndpoint = "https://api.openai.com/v1/responses"
-	DefaultOpenAIModel    = "gpt-5-nano"
+	DefaultOpenAIEndpoint     = "https://api.openai.com/v1/responses"
+	DefaultOpenAIModel        = "gpt-5-nano"
+	DefaultOpenAIPlannerModel = "gpt-5.5"
 )
 
 type OpenAIReviewer struct {
@@ -21,6 +22,115 @@ type OpenAIReviewer struct {
 	Endpoint string
 	Model    string
 	Client   *http.Client
+}
+
+type OpenAITopicPlanner struct {
+	APIKey          string
+	Endpoint        string
+	Model           string
+	ReasoningEffort string
+	Client          *http.Client
+}
+
+func (p OpenAITopicPlanner) Plan(ctx context.Context, topic string) (PlanOutput, error) {
+	if strings.TrimSpace(p.APIKey) == "" {
+		return PlanOutput{}, errors.New("OPENAI_API_KEY is required")
+	}
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return PlanOutput{}, errors.New("topic is required")
+	}
+
+	endpoint := strings.TrimSpace(p.Endpoint)
+	if endpoint == "" {
+		endpoint = DefaultOpenAIEndpoint
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = DefaultOpenAIPlannerModel
+	}
+	reasoningEffort := strings.TrimSpace(p.ReasoningEffort)
+	if reasoningEffort == "" {
+		reasoningEffort = "high"
+	}
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
+
+	userPayload, err := json.Marshal(openAIPlanPrompt{
+		Topic:     topic,
+		MaxTopics: DefaultMaxPlannedSearches,
+	})
+	if err != nil {
+		return PlanOutput{}, fmt.Errorf("encode plan prompt: %w", err)
+	}
+
+	requestBody, err := json.Marshal(openAIResponsesRequest{
+		Model: model,
+		Input: []openAIInputMessage{
+			{Role: "system", Content: planSystemPrompt()},
+			{Role: "user", Content: string(userPayload)},
+		},
+		Text: openAITextConfig{
+			Format: openAITextFormat{
+				Type:   "json_schema",
+				Name:   "dailydocs_topic_plan",
+				Strict: true,
+				Schema: planSchema(),
+			},
+		},
+		Store:           false,
+		Reasoning:       openAIReasoningConfig{Effort: reasoningEffort},
+		MaxOutputTokens: 8000,
+	})
+	if err != nil {
+		return PlanOutput{}, fmt.Errorf("encode openai plan request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
+	if err != nil {
+		return PlanOutput{}, fmt.Errorf("create openai plan request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(p.APIKey))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return PlanOutput{}, fmt.Errorf("send openai plan request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var response openAIResponsesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return PlanOutput{}, fmt.Errorf("decode openai plan response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if response.Error.Message != "" {
+			return PlanOutput{}, fmt.Errorf("openai plan failed status=%d error=%s", resp.StatusCode, response.Error.Message)
+		}
+		return PlanOutput{}, fmt.Errorf("openai plan failed status=%d", resp.StatusCode)
+	}
+
+	output := strings.TrimSpace(response.OutputText)
+	if output == "" {
+		output = strings.TrimSpace(responseText(response))
+	}
+	if output == "" {
+		return PlanOutput{}, fmt.Errorf("openai plan returned no text status=%s incomplete_reason=%s", response.Status, response.IncompleteDetails.Reason)
+	}
+
+	var plan openAIPlanResponse
+	if err := json.Unmarshal([]byte(output), &plan); err != nil {
+		return PlanOutput{}, fmt.Errorf("decode openai plan json: %w", err)
+	}
+	return PlanOutput{
+		Topics:       plan.Topics,
+		Model:        response.Model,
+		InputTokens:  response.Usage.InputTokens,
+		OutputTokens: response.Usage.OutputTokens,
+		TotalTokens:  response.Usage.TotalTokens,
+	}, nil
 }
 
 func (r OpenAIReviewer) Review(ctx context.Context, topic string, candidates []ReviewCandidate) (ReviewOutput, error) {
@@ -63,7 +173,7 @@ func (r OpenAIReviewer) Review(ctx context.Context, topic string, candidates []R
 				Type:   "json_schema",
 				Name:   "dailydocs_review",
 				Strict: true,
-				Schema: reviewSchema(),
+				Schema: reviewSchema(len(candidates)),
 			},
 		},
 		Store:           false,
@@ -122,6 +232,15 @@ func (r OpenAIReviewer) Review(ctx context.Context, topic string, candidates []R
 type openAIReviewPrompt struct {
 	Topic      string            `json:"topic"`
 	Candidates []ReviewCandidate `json:"candidates"`
+}
+
+type openAIPlanPrompt struct {
+	Topic     string `json:"topic"`
+	MaxTopics int    `json:"max_topics"`
+}
+
+type openAIPlanResponse struct {
+	Topics []PlannedTopic `json:"topics"`
 }
 
 type openAIReviewResponse struct {
@@ -212,12 +331,97 @@ Consider:
 
 Do not favor API indexes, release notes, navigation pages, social posts, shallow listicles, resource lists, whole books, or generated reference material.
 Write reasons in concise ASCII English only.
+Review every candidate exactly once, including rejected candidates. Never omit a candidate or repeat an index.
 
 Return only JSON matching the schema.
 `)
 }
 
-func reviewSchema() map[string]any {
+func planSystemPrompt() string {
+	return strings.TrimSpace(`
+You are a senior engineering curriculum editor for DailyDocs.
+
+DailyDocs recommends one documentation page each day to software engineers.
+
+Generate technically significant subtopics for the requested parent topic.
+The output is a retrieval plan, not a factual source of truth.
+
+Prioritize features, APIs, frameworks, internals, and capabilities that:
+- senior engineers are likely to encounter in official guides or API documentation
+- reward deep understanding over basic CRUD knowledge
+- can plausibly map to a specific standalone documentation page
+- are evergreen enough for a daily reading rotation
+
+Avoid broad homepages, whole books, company marketing pages, listicles, and beginner-only topics.
+Do not invent URLs.
+Use include_domains only when you are highly confident the domain is official or authoritative for the parent topic.
+Search queries should be short, concrete, and biased toward official documentation.
+Return only JSON matching the schema.
+`)
+}
+
+func planSchema() map[string]any {
+	topic := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"name", "category", "reason", "search_queries", "include_domains", "expected_terms"},
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type":      "string",
+				"maxLength": 120,
+			},
+			"category": map[string]any{
+				"type":      "string",
+				"maxLength": 80,
+			},
+			"reason": map[string]any{
+				"type":      "string",
+				"maxLength": 240,
+			},
+			"search_queries": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": 2,
+				"items": map[string]any{
+					"type":      "string",
+					"maxLength": 160,
+				},
+			},
+			"include_domains": map[string]any{
+				"type":     "array",
+				"maxItems": 3,
+				"items": map[string]any{
+					"type":      "string",
+					"maxLength": 120,
+				},
+			},
+			"expected_terms": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": 6,
+				"items": map[string]any{
+					"type":      "string",
+					"maxLength": 80,
+				},
+			},
+		},
+	}
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"topics"},
+		"properties": map[string]any{
+			"topics": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": DefaultMaxPlannedSearches,
+				"items":    topic,
+			},
+		},
+	}
+}
+
+func reviewSchema(candidateCount int) map[string]any {
 	result := map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -250,8 +454,10 @@ func reviewSchema() map[string]any {
 		"required":             []string{"results"},
 		"properties": map[string]any{
 			"results": map[string]any{
-				"type":  "array",
-				"items": result,
+				"type":     "array",
+				"minItems": candidateCount,
+				"maxItems": candidateCount,
+				"items":    result,
 			},
 		},
 	}

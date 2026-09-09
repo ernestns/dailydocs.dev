@@ -63,7 +63,7 @@
     <p>
       <span class="status">{{.Topic.Status}}</span> ·
       {{.Topic.AcceptedCount}} accepted ·
-      {{.Topic.EvaluatedCount}} evaluated
+      {{.Topic.EvaluatedCount}} candidates
     </p>
     {{if .Results}}
     <table>
@@ -83,8 +83,8 @@
             <a href="{{.URL}}">{{.Title}}</a><br>
             {{.Source}}
           </td>
-          <td>{{if .Accepted}}Accepted{{else}}Rejected{{end}}</td>
-          <td>{{.ReviewerScore}}</td>
+          <td>{{if .Accepted}}Accepted{{else if .Reviewed}}Rejected{{else}}Not reviewed{{end}}</td>
+          <td>{{if .Reviewed}}{{.ReviewerScore}}{{else}}—{{end}}</td>
           <td>{{.PageType}}</td>
           <td class="reason">{{.ReviewerReason}}</td>
         </tr>

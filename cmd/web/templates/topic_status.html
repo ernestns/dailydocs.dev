@@ -4,7 +4,13 @@
   {{if .IsProcessing}}data-on-interval__duration.2s="@get('/topics/{{.Slug}}/status')"{{end}}
 >
   <p class="status">{{.StatusLabel}}</p>
-  {{if eq .Status "active"}}
+  {{if eq .Status "missing"}}
+  <p>Request this topic to find documentation worth reading.</p>
+  <form method="post" action="/read">
+    <input type="hidden" name="topic" value="{{.Slug}}">
+    <button type="submit">Request Topic</button>
+  </form>
+  {{else if eq .Status "active"}}
   <p>This topic is ready.</p>
   <p><a class="button" href="/{{.Slug}}">View reading</a></p>
   {{else if .IsProcessing}}

@@ -41,7 +41,9 @@ app address: 127.0.0.1:8080
 service: dailydocs.service
 ```
 
-On Ubuntu 26, `golang-go` installs Go 1.26.
+On Ubuntu 26, `golang-go` installs the Go 1.26 series.
+The minimum patch version is declared in `go.mod` (currently 1.26.6).
+Leave Go's normal automatic toolchain selection enabled so an older installed patch can fetch the required version when building.
 
 Override defaults with environment variables:
 

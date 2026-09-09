@@ -115,7 +115,9 @@ func TestGenerateReadingQueuesMissingTopic(t *testing.T) {
 
 	handler := newTestHandler(conn)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/read?topic=Rust", nil))
+	request := httptest.NewRequest(http.MethodPost, "/read", strings.NewReader("topic=Rust"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(response, request)
 
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", response.Code)
@@ -140,7 +142,9 @@ func TestGenerateReadingKeepsTopicQueuedWithoutProvider(t *testing.T) {
 
 	handler := newTestHandler(conn)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/read?topic=Rust", nil))
+	request := httptest.NewRequest(http.MethodPost, "/read", strings.NewReader("topic=Rust"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(response, request)
 
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", response.Code)
@@ -170,7 +174,9 @@ func TestGenerateReadingProcessesMissingTopicWhenProviderExists(t *testing.T) {
 		},
 	})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/read?topic=Rust", nil))
+	request := httptest.NewRequest(http.MethodPost, "/read", strings.NewReader("topic=Rust"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(response, request)
 
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", response.Code)
@@ -198,6 +204,9 @@ func TestMissingTopicPageShowsFailedStateWhenProviderFails(t *testing.T) {
 	defer conn.Close()
 
 	handler := newTestHandlerWithProvider(conn, webFakeProvider{err: errors.New("search unavailable")})
+	request := httptest.NewRequest(http.MethodPost, "/read", strings.NewReader("topic=Rust"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(httptest.NewRecorder(), request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
 
@@ -221,13 +230,16 @@ func TestMissingTopicPageProcessesRequestedTopicWhenProviderExists(t *testing.T)
 			{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
 		},
 	})
+	request := httptest.NewRequest(http.MethodPost, "/read", strings.NewReader("topic=Rust"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(httptest.NewRecorder(), request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "View reading") {
+	if !strings.Contains(response.Body.String(), "Generics") {
 		t.Fatalf("expected active status page:\n%s", response.Body.String())
 	}
 
@@ -274,7 +286,7 @@ func TestTopicStatusEndpointRendersStatusFragment(t *testing.T) {
 	}
 }
 
-func TestMissingTopicPageShowsQueuedState(t *testing.T) {
+func TestMissingTopicPageOffersExplicitRequest(t *testing.T) {
 	ctx := context.Background()
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
@@ -283,14 +295,14 @@ func TestMissingTopicPageShowsQueuedState(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
 
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	if !strings.Contains(body, "Rust") {
 		t.Fatalf("expected topic name in queued page:\n%s", body)
 	}
-	if !strings.Contains(body, "queued") {
+	if !strings.Contains(body, `action="/read"`) || !strings.Contains(body, "Request Topic") {
 		t.Fatalf("expected queued state in body:\n%s", body)
 	}
 }
@@ -533,6 +545,32 @@ func TestTopicEvaluationsPageListsReviewedCandidates(t *testing.T) {
 	for _, expected := range []string{"Generics", "Accepted", "The Rust Book", "Rejected", "Too broad."} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in evaluations page:\n%s", expected, body)
+		}
+	}
+}
+
+func TestEvaluationsDistinguishUnreviewedFromRejected(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	seedQueuedWebTopic(t, ctx, conn, "sqlite", "SQLite")
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO topic_search_runs (topic_id, provider, query, status) VALUES (1, 'tavily', 'SQLite', 'failed');
+		INSERT INTO topic_search_results (topic_id, search_run_id, title, url, source, rank, reviewer_score, accepted)
+		VALUES (1, 1, 'Awaiting review', 'https://sqlite.org/wal.html', 'sqlite.org', 1, NULL, 0),
+		       (1, 1, 'Rejected page', 'https://sqlite.org/search?q=wal', 'sqlite.org', 2, 0, 0);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	newTestHandler(conn).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/topics/sqlite/evaluations", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{"Not reviewed", "Rejected", "<td>0</td>", "<td>—</td>", "2 candidates"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q: %s", want, body)
 		}
 	}
 }

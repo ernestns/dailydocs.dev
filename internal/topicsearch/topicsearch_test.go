@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,6 +268,135 @@ func TestSearchTopicKeepsCandidatesWhenReviewerFails(t *testing.T) {
 	}
 	if resultCount != 2 {
 		t.Fatalf("expected two saved unreviewed candidates, got %d", resultCount)
+	}
+}
+
+func TestSearchTopicUsesPlannerToSearchFocusedQueries(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	provider := &recordingProvider{
+		resultsByQuery: map[string][]SearchResult{
+			"Rust Pin Unpin official documentation": {
+				{Title: "Pinning", URL: "https://doc.rust-lang.org/std/pin/", Content: "Pin and Unpin concepts."},
+			},
+			"Rust trait coherence official documentation": {
+				{Title: "Trait coherence", URL: "https://doc.rust-lang.org/reference/items/implementations.html", Content: "Coherence and orphan rules."},
+			},
+		},
+	}
+
+	result, err := SearchTopic(ctx, conn, "Rust", Options{
+		Provider: provider,
+		Planner: fakePlanner{
+			output: PlanOutput{
+				Topics: []PlannedTopic{
+					{
+						Name:           "Pinning",
+						SearchQueries:  []string{"Rust Pin Unpin official documentation"},
+						IncludeDomains: []string{"https://doc.rust-lang.org"},
+						ExpectedTerms:  []string{"Pin", "Unpin"},
+					},
+					{
+						Name:          "Trait coherence",
+						SearchQueries: []string{"Rust trait coherence official documentation"},
+						ExpectedTerms: []string{"orphan rules"},
+					},
+				},
+			},
+		},
+		Now:                        fixedTopicSearchTime,
+		MinInterval:                time.Nanosecond,
+		MaxPlannedSearches:         2,
+		MaxResultsPerPlannedSearch: 2,
+	})
+	if err != nil {
+		t.Fatalf("search topic: %v", err)
+	}
+	if result.ResultCount != 2 || result.StoredCount != 2 {
+		t.Fatalf("unexpected result counts: %+v", result)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("expected two planned provider calls, got %+v", provider.calls)
+	}
+	if provider.calls[0].Query != "Rust Pin Unpin official documentation" || provider.calls[0].MaxResults != 2 {
+		t.Fatalf("unexpected first provider call: %+v", provider.calls[0])
+	}
+	if len(provider.calls[0].IncludeDomains) != 1 || provider.calls[0].IncludeDomains[0] != "doc.rust-lang.org" {
+		t.Fatalf("expected sanitized include domain, got %+v", provider.calls[0].IncludeDomains)
+	}
+
+	var runQuery string
+	if err := conn.QueryRowContext(ctx, "SELECT query FROM topic_search_runs").Scan(&runQuery); err != nil {
+		t.Fatalf("read run query: %v", err)
+	}
+	if !strings.Contains(runQuery, "Rust Pin Unpin") || !strings.Contains(runQuery, "trait coherence") {
+		t.Fatalf("expected planned queries to be recorded, got %q", runQuery)
+	}
+}
+
+func TestSearchTopicRecordsPlannerFailure(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		Provider:    &recordingProvider{},
+		Planner:     fakePlanner{err: errors.New("planner unavailable")},
+		Now:         fixedTopicSearchTime,
+		MinInterval: time.Nanosecond,
+	})
+	if err == nil {
+		t.Fatal("expected planner error")
+	}
+
+	var topicStatus, runStatus, runStage, runError string
+	if err := conn.QueryRowContext(ctx, "SELECT status FROM topics WHERE slug = 'rust'").Scan(&topicStatus); err != nil {
+		t.Fatalf("read topic status: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, "SELECT status, stage, error FROM topic_search_runs").Scan(&runStatus, &runStage, &runError); err != nil {
+		t.Fatalf("read run status: %v", err)
+	}
+	if topicStatus != "failed" || runStatus != "failed" || runStage != "" || runError != "planner unavailable" {
+		t.Fatalf("expected failed planner run, got topic=%q run=%q stage=%q error=%q", topicStatus, runStatus, runStage, runError)
+	}
+}
+
+func TestSearchTopicBatchesReviewerCandidates(t *testing.T) {
+	ctx := context.Background()
+	conn := openTopicSearchTestDB(t, ctx)
+	defer conn.Close()
+
+	reviewer := &batchReviewer{}
+	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		Provider: fakeProvider{
+			results: []SearchResult{
+				{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
+				{Title: "Ownership", URL: "https://doc.rust-lang.org/stable/book/ch04-00-understanding-ownership.html"},
+				{Title: "Lifetimes", URL: "https://doc.rust-lang.org/stable/book/ch10-03-lifetime-syntax.html"},
+				{Title: "Traits", URL: "https://doc.rust-lang.org/stable/book/ch10-02-traits.html"},
+				{Title: "Closures", URL: "https://doc.rust-lang.org/stable/book/ch13-01-closures.html"},
+			},
+		},
+		Reviewer:        reviewer,
+		Now:             fixedTopicSearchTime,
+		MinInterval:     time.Nanosecond,
+		ReviewBatchSize: 2,
+	})
+	if err != nil {
+		t.Fatalf("search topic: %v", err)
+	}
+	if fmt.Sprint(reviewer.batchSizes) != "[2 2 1]" {
+		t.Fatalf("expected reviewer batches [2 2 1], got %+v", reviewer.batchSizes)
+	}
+
+	var pageCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages").Scan(&pageCount); err != nil {
+		t.Fatalf("count pages: %v", err)
+	}
+	if pageCount != 5 {
+		t.Fatalf("expected five accepted pages, got %d", pageCount)
 	}
 }
 
@@ -693,4 +823,63 @@ func (r fakeReviewer) Review(context.Context, string, []ReviewCandidate) (Review
 		return ReviewOutput{}, r.err
 	}
 	return r.output, nil
+}
+
+type fakePlanner struct {
+	output PlanOutput
+	err    error
+}
+
+func (p fakePlanner) Plan(context.Context, string) (PlanOutput, error) {
+	if p.err != nil {
+		return PlanOutput{}, p.err
+	}
+	return p.output, nil
+}
+
+type providerCall struct {
+	Query          string
+	MaxResults     int
+	IncludeDomains []string
+}
+
+type recordingProvider struct {
+	calls          []providerCall
+	resultsByQuery map[string][]SearchResult
+	err            error
+}
+
+func (p *recordingProvider) Search(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	return p.SearchWithRequest(ctx, SearchRequest{Query: query, MaxResults: maxResults})
+}
+
+func (p *recordingProvider) SearchWithRequest(_ context.Context, request SearchRequest) ([]SearchResult, error) {
+	p.calls = append(p.calls, providerCall(request))
+	if p.err != nil {
+		return nil, p.err
+	}
+	return p.resultsByQuery[request.Query], nil
+}
+
+type batchReviewer struct {
+	batchSizes []int
+}
+
+func (r *batchReviewer) Review(_ context.Context, _ string, candidates []ReviewCandidate) (ReviewOutput, error) {
+	r.batchSizes = append(r.batchSizes, len(candidates))
+	results := make([]ReviewResult, 0, len(candidates))
+	for _, candidate := range candidates {
+		results = append(results, ReviewResult{
+			Index:          candidate.Index,
+			DailyDocsScore: 90,
+			PageType:       "concept",
+			ShouldStore:    true,
+			Reason:         "Specific concept page.",
+		})
+	}
+	return ReviewOutput{
+		Results:     results,
+		Model:       "gpt-5-nano-test",
+		TotalTokens: len(candidates),
+	}, nil
 }

@@ -54,3 +54,36 @@ func TestTavilyClientRequiresAPIKey(t *testing.T) {
 		t.Fatalf("expected api key error, got %v", err)
 	}
 }
+
+func TestTavilyClientSendsSearchRequestWithIncludeDomains(t *testing.T) {
+	var request tavilySearchRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	client := TavilyClient{
+		APIKey:   "test-key",
+		Endpoint: server.URL,
+		Client:   server.Client(),
+	}
+	_, err := client.SearchWithRequest(context.Background(), SearchRequest{
+		Query:          "Rust Pin Unpin official documentation",
+		MaxResults:     100,
+		IncludeDomains: []string{"https://doc.rust-lang.org", "www.rust-lang.org/"},
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if request.MaxResults != tavilyMaxResults {
+		t.Fatalf("expected max results clamp to %d, got %d", tavilyMaxResults, request.MaxResults)
+	}
+	if len(request.IncludeDomains) != 2 || request.IncludeDomains[0] != "doc.rust-lang.org" || request.IncludeDomains[1] != "rust-lang.org" {
+		t.Fatalf("unexpected include domains: %+v", request.IncludeDomains)
+	}
+}

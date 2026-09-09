@@ -1,0 +1,107 @@
+{
+  "source": "2026-09-09 bounded SQLite sample; provider metadata and model decisions only",
+  "results": [
+    {
+      "Title": "Search SQLite Documentation",
+      "URL": "https://www.sqlite.org/search?q=wal",
+      "Score": 0.80771893
+    },
+    {
+      "Title": "Search SQLite Documentation",
+      "URL": "https://sqlite.org/search?q=wal&i=1",
+      "Score": 0.78631157
+    },
+    {
+      "Title": "Search SQLite Documentation",
+      "URL": "https://www.sqlite.org/search?q=open+mode&i=1",
+      "Score": 0.78631157
+    },
+    {
+      "Title": "Search SQLite Documentation",
+      "URL": "https://www.sqlite.org/search?q=%22locking.%22&i=1",
+      "Score": 0.76300776
+    },
+    {
+      "Title": "File Locking And Concurrency In SQLite Version 3",
+      "URL": "https://sqlite.org/lockingv3.html",
+      "Score": 0.76279575
+    },
+    {
+      "Title": "Search SQLite Documentation",
+      "URL": "https://sqlite.org/search?q=nfs",
+      "Score": 0.74697095
+    },
+    {
+      "Title": "The Next-Generation Query Planner",
+      "URL": "http://sqlite.org/queryplanner-ng.html",
+      "Score": 0.8939131
+    },
+    {
+      "Title": "The Next-Generation Query Planner",
+      "URL": "https://www.sqlite.org/queryplanner-ng.html",
+      "Score": 0.89166987
+    },
+    {
+      "Title": "The SQLite Query Optimizer Overview",
+      "URL": "https://sqlite.org/optoverview.html#manual_control_of_query_plans_using_sqlite_stat_tables",
+      "Score": 0.8657814
+    },
+    {
+      "Title": "EXPLAIN QUERY PLAN",
+      "URL": "https://sqlite.org/eqp.html",
+      "Score": 0.94944966
+    },
+    {
+      "Title": "EXPLAIN QUERY PLAN",
+      "URL": "https://www.sqlite.org/eqp.html",
+      "Score": 0.94944966
+    },
+    {
+      "Title": "SQLite User Forum: Log Explain Query Plan with Python?",
+      "URL": "https://sqlite.org/forum/info/1e287a079a19ce651072b02368ec296df5cbf7332026740a9b32408ce42e472e",
+      "Score": 0.86108357
+    }
+  ],
+  "reviews": [
+    {
+      "URL": "https://sqlite.org/eqp.html",
+      "index": 1,
+      "dailydocs_score": 85,
+      "page_type": "guide",
+      "should_store": true,
+      "reason": "Focused, practical guide to interpreting EXPLAIN QUERY PLAN output; evergreen concept in query debugging; standalone readability; high educational value for understanding how SQLite uses indexes."
+    },
+    {
+      "URL": "https://www.sqlite.org/eqp.html",
+      "index": 2,
+      "dailydocs_score": 85,
+      "page_type": "guide",
+      "should_store": true,
+      "reason": "Same as 1 (duplicate source). High value for understanding query plans and index usage; good standalone guide with actionable content."
+    },
+    {
+      "URL": "http://sqlite.org/queryplanner-ng.html",
+      "index": 3,
+      "dailydocs_score": 75,
+      "page_type": "reference",
+      "should_store": true,
+      "reason": "Explains the Next-Generation Query Planner in depth. Useful for experienced readers; somewhat broad but still focused on a specific component of the planner."
+    },
+    {
+      "URL": "https://www.sqlite.org/queryplanner-ng.html",
+      "index": 4,
+      "dailydocs_score": 75,
+      "page_type": "reference",
+      "should_store": true,
+      "reason": "Duplicate of 3 from a different host; solid, detailed concept page but not uniquely new. Useful, but similar value to 3."
+    },
+    {
+      "URL": "https://sqlite.org/optoverview.html#manual_control_of_query_plans_using_sqlite_stat_tables",
+      "index": 5,
+      "dailydocs_score": 70,
+      "page_type": "reference",
+      "should_store": true,
+      "reason": "High-level overview of the SQLite Query Optimizer; evergreen and educational but broader in scope. Good background, but less of a single concrete concept page."
+    }
+  ]
+}
