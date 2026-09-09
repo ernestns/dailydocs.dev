@@ -135,7 +135,9 @@ Implications:
 - Process at most 20 topics per UTC day.
 - If the daily cap has been reached, keep remaining topics queued.
 - The UI shows queued/searching/reviewing/storing/failed/active status and updates the status panel with Datastar.
+- Queued status panels continue read-only refreshes while another generation holds the worker; completion stops polling.
 - Failed topics can be retried manually.
+- Cancellation and provider deadlines persist failure using a separate bounded cleanup context so the failed job releases the global running restriction.
 - Per-user rate limiting can wait until there is evidence the daily cap is insufficient.
 
 ### Require An Explicit Topic Generation Request

@@ -680,6 +680,9 @@ func updateSearchRunQueryAndStage(ctx context.Context, conn *sql.DB, runID int64
 }
 
 func failRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int64, runErr error) error {
+	// A provider deadline/cancellation must not leave the global running slot occupied.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if _, err := conn.ExecContext(ctx, `
 		UPDATE topic_search_runs
 		SET status = 'failed',
@@ -801,7 +804,11 @@ func nextReadingOrder(ctx context.Context, tx *sql.Tx, topicID int64) (int, erro
 }
 
 func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, result storedResult) (int64, error) {
-	_, err := tx.ExecContext(ctx, `
+	result, err := reuseStoredSQLiteURL(ctx, tx, "pages", topicID, result)
+	if err != nil {
+		return 0, err
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO pages (
 			topic_id,
 			title,
@@ -834,7 +841,11 @@ func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, res
 }
 
 func upsertSearchCandidate(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, result storedResult) error {
-	_, err := tx.ExecContext(ctx, `
+	result, err := reuseStoredSQLiteURL(ctx, tx, "topic_search_results", topicID, result)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO topic_search_results (
 			topic_id,
 			search_run_id,
@@ -869,6 +880,10 @@ func upsertSearchCandidate(ctx context.Context, tx *sql.Tx, topicID int64, runID
 }
 
 func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, pageID sql.NullInt64, result storedResult) error {
+	result, err := reuseStoredSQLiteURL(ctx, tx, "topic_search_results", topicID, result)
+	if err != nil {
+		return err
+	}
 	accepted := 0
 	var score any
 	if result.Reviewed {
@@ -877,7 +892,7 @@ func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID in
 	if result.Accepted {
 		accepted = 1
 	}
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO topic_search_results (
 			topic_id,
 			search_run_id,
@@ -909,6 +924,51 @@ func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID in
 		return fmt.Errorf("upsert search result %q: %w", result.URL, err)
 	}
 	return nil
+}
+
+// Resolve the same verified SQLite identity across searches as within one batch.
+// Existing IDs, reading order and references survive; historical duplicates are not deleted.
+func reuseStoredSQLiteURL(ctx context.Context, tx *sql.Tx, table string, topicID int64, result storedResult) (storedResult, error) {
+	parsed, err := url.Parse(readingURLKey(result.URL))
+	if err != nil || parsed.User != nil || parsed.Host != "sqlite.org" || parsed.Scheme != "https" {
+		return result, nil
+	}
+	// Table names are internal constants, never provider or request input.
+	if table != "pages" && table != "topic_search_results" {
+		return storedResult{}, fmt.Errorf("unsupported reading identity table %q", table)
+	}
+	var aliases []any
+	for _, scheme := range []string{"https", "http"} {
+		for _, host := range []string{"sqlite.org", "www.sqlite.org"} {
+			parsed.Scheme, parsed.Host = scheme, host
+			aliases = append(aliases, parsed.String())
+		}
+	}
+	var id int64
+	var existingURL string
+	// Prefer an exact existing row if a historical catalog already contains aliases.
+	err = tx.QueryRowContext(ctx, "SELECT id, url FROM "+table+`
+		WHERE topic_id = ? AND url IN (?, ?, ?, ?)
+		ORDER BY (url = ?) DESC, id LIMIT 1
+	`, topicID, aliases[0], aliases[1], aliases[2], aliases[3], result.URL).Scan(&id, &existingURL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return result, nil
+	}
+	if err != nil {
+		return storedResult{}, fmt.Errorf("resolve stored SQLite URL: %w", err)
+	}
+	if strings.HasPrefix(existingURL, "http://") && strings.HasPrefix(result.URL, "https://") {
+		// Upgrade only to the actual HTTPS destination returned by this search.
+		if _, err := tx.ExecContext(ctx, "UPDATE "+table+" SET url = ? WHERE id = ?", result.URL, id); err != nil {
+			return storedResult{}, fmt.Errorf("update stored SQLite destination: %w", err)
+		}
+	} else {
+		result.URL, result.Source, err = normalizeURL(existingURL)
+		if err != nil {
+			return storedResult{}, err
+		}
+	}
+	return result, nil
 }
 
 func normalizeResults(results []SearchResult) []storedResult {

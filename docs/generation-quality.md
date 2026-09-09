@@ -20,6 +20,7 @@ This historical observation is not a controlled benchmark or a claim that nonoff
 ## Bounded planner sample
 
 One local SQLite generation used a disposable database, the existing provider credentials, four focused searches with three results each, and a single candidate-review call.
+It searched only the first four of twenty proposed plan items; production defaults allow twenty searches, so this sample does not establish full-run coverage, latency or cost.
 No live application data or deployment changed.
 
 | Step | Configuration and observed usage |
@@ -48,17 +49,25 @@ The captured response is represented by `internal/topicsearch/testdata/sqlite-qu
 The corrected pipeline publishes three distinct useful readings from those same recorded decisions, rather than five duplicate entries.
 It retains all ten distinct candidate destinations; seven omitted review decisions are explicitly unreviewed rather than invented zero-score rejections.
 That replay is deterministic and makes no external requests; it is not a second live generation sample.
+Recorded decisions are remapped to the deduplicated candidates by equivalent URL, and the compact fixture omits raw snippets; it does not reproduce a second live model response or the full original prompt.
 
 URL equivalence is intentionally narrow.
 SQLite's HTTP query-planner URL was verified to redirect to HTTPS, and the www/non-www HTTPS responses had matching ETag and content length.
 Only those SQLite host/scheme aliases are treated as equivalent; unrelated www hosts and HTTP destinations are not assumed interchangeable.
 A returned HTTPS alias is preferred without inventing a new destination.
+Repeated `search-topic` calls now resolve those same aliases against stored candidates and pages before upserting, retaining page IDs, reading order and daily-reading references.
+Already-existing historical duplicate rows are retained; this correction introduces no migration or data deletion.
 Meaningful query parameters and section fragments remain part of reading identity; known tracking parameters and the conventional `#top` anchor are removed.
 
 The review request now requires one result per candidate in its structured schema and prompt.
 If a response nevertheless omits candidates, the available valid decisions remain usable and missing decisions retain NULL scores.
 Duplicate or unknown review indices fail the review and leave candidates unreviewed, instead of publishing ambiguous decisions.
 The public evaluation table distinguishes Not reviewed from a genuine zero-score rejection, and counts discovered candidates explicitly.
+
+Queued topic pages continue refreshing status while another explicitly requested generation holds the worker.
+Those GET refreshes never start generation; completed pages stop polling and offer the reading link.
+Provider cancellation or timeout records the original failed run using a separate five-second cleanup context, releases the global running restriction, and exposes the existing explicit retry action.
+The generation itself keeps its original deadline.
 
 ## Repeating a bounded evaluation
 
@@ -79,6 +88,8 @@ Do not infer broad quality, accessibility, or latency guarantees from this one s
 The new request-boundary regressions fail against the original handler for unknown topics, scanner-like paths, dated unknown URLs, GET `/read`, and queued-topic GETs.
 The captured duplicate/ambiguous-review regressions also fail against the inherited pipeline.
 They pass against the corrected implementation, alongside the existing Go test suite.
+Independent review also reproduced a queued redirect that stopped polling, canceled jobs that stayed running, and SQLite aliases duplicated by repeated CLI invocations.
+Regressions now cover two serialized POST requests and their status refreshes, planner/search/review cancellation with subsequent successful generation, and repeated CLI discovery with preserved historical identity and distinct-resource controls.
 Browser tooling was unavailable during this change; functional handler/template tests ran, but an interactive visual review is not claimed.
 
 The initial vulnerability scan on the installed Go 1.26.4 found reachable standard-library advisories
