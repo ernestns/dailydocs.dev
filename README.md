@@ -19,3 +19,5 @@ https://dailydocs.dev/go/2026-06-26
 ```
 
 No accounts. No setup. Just open the link and read.
+
+Operators can inspect a [private traffic report](docs/traffic.md) over the existing SSH connection.

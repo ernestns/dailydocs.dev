@@ -55,6 +55,15 @@ func main() {
 	}
 	defer conn.Close()
 
+	trafficCollector := newTrafficCollector(conn)
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := trafficCollector.Close(flushCtx); err != nil {
+			log.Print("traffic: final aggregate flush did not complete")
+		}
+	}()
+
 	var searchProvider topicsearch.Provider
 	if os.Getenv("TAVILY_API_KEY") != "" {
 		searchProvider = topicsearch.TavilyClient{
@@ -86,7 +95,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           trafficCollector.Middleware(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

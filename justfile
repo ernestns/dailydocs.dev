@@ -57,3 +57,8 @@ smoke:
 # Deploy using REMOTE and REPO_DIR from local .env
 deploy: pre-deploy
 	./scripts/with-env.sh sh -c 'test -n "$REMOTE" && test -n "$REPO_DIR" && REMOTE="$REMOTE" REPO_DIR="$REPO_DIR" ./scripts/deploy-remote.sh'
+
+# View a private 7/30/90-day HTML report using the existing SSH login.
+[positional-arguments]
+traffic days="30":
+	./scripts/with-env.sh ./scripts/traffic-report-remote.sh "$1"

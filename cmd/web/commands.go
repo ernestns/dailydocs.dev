@@ -9,11 +9,14 @@ import (
 	"github.com/ernestns/daily-docs/internal/db"
 	"github.com/ernestns/daily-docs/internal/seed"
 	"github.com/ernestns/daily-docs/internal/topicsearch"
+	"github.com/ernestns/daily-docs/internal/traffic"
 	"github.com/ernestns/daily-docs/internal/validator"
 )
 
 func runCommand(ctx context.Context, args []string) error {
 	switch args[0] {
+	case "traffic-report":
+		return traffic.RunReport(ctx, args[1:], os.Getenv("DB_PATH"), os.Stdout)
 	case "import-file":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: dailydocs import-file path/to/topic.yaml")
