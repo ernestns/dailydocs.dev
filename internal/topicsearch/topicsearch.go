@@ -1201,7 +1201,11 @@ func normalizeURL(raw string) (string, string, error) {
 // SQLite serves these documented host/scheme aliases as the same resource.
 // Do not assume www or HTTP aliases for unrelated sites, or discard query/section identity.
 func readingURLKey(rawURL string) string {
-	parsed, err := url.Parse(rawURL)
+	normalized, _, err := normalizeURL(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	parsed, err := url.Parse(normalized)
 	if err != nil {
 		return rawURL
 	}

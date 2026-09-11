@@ -3,7 +3,8 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const script = fs.readFileSync(0, "utf8");
 
-function setup(restoredValue = "", suggestions = null) {
+function setup(restoredValue = "", suggestions = undefined) {
+  const requests = [];
   const listeners = new Map();
   function element(id) {
     return {
@@ -22,9 +23,14 @@ function setup(restoredValue = "", suggestions = null) {
   const document = { getElementById(id) { return elements[id]; }, createElement() { return element("option"); } };
   const window = { addEventListener(name, callback) { listeners.set("window:" + name, callback); }, setTimeout() {} };
   // Leave autocomplete pending: enable/disable must not wait for the network.
-  const context = vm.createContext({document, window, AbortController, fetch() { return suggestions === null ? new Promise(() => {}) : Promise.resolve({ok: true, async json() { return suggestions; }}); }});
+  const context = vm.createContext({document, window, AbortController, fetch(path) {
+    requests.push(path);
+    return suggestions === undefined ? new Promise(() => {}) : Promise.resolve({ok: true, async json() {
+      return typeof suggestions === "function" ? suggestions(path) : suggestions;
+    }});
+  }});
   vm.runInContext(script, context);
-  return { elements, listeners };
+  return { elements, listeners, requests };
 }
 
 const {elements, listeners} = setup();
@@ -99,7 +105,42 @@ async function testAutocomplete() {
     await identity.listeners.get("topic-input:input")();
     assert.equal(identity.elements["topic-button"].textContent, "View Reading", "same-name legacy topic must match");
   }
-  console.log("Actual home script passed: network options, ArrowDown/ArrowUp bounds, Enter selection, Escape dismissal, accessible active state, and colliding names.");
+  const endpointResponses = JSON.parse(process.argv[2]);
+  for (const empty of [endpointResponses[0], null, []]) {
+    const responses = [empty, endpointResponses[1]];
+    const recovery = setup("not-known", () => responses.shift());
+    const input = recovery.elements["topic-input"], button = recovery.elements["topic-button"];
+    const results = recovery.elements["topic-results"];
+    await recovery.listeners.get("topic-input:input")();
+    assert.equal(button.disabled, false);
+    assert.equal(button.textContent, "Request Topic");
+    assert.equal(recovery.elements["topic-status"].textContent, "No matching topic found.");
+    assert.equal(results.hidden, true);
+    assert.equal(results.children.length, 0);
+    assert.equal(input.getAttribute("aria-expanded"), "false");
+    input.value = "Go";
+    await recovery.listeners.get("topic-input:input")();
+    assert.deepEqual(recovery.requests, ["/topics/search?q=not-known", "/topics/search?q=Go"], "editing after no match must fetch again without clearing");
+    assert.equal(responses.length, 0);
+    assert.equal(results.hidden, false);
+    assert.equal(results.children[0].textContent, "Go");
+    const keys = [];
+    for (const key of ["ArrowDown", "Enter"]) {
+      recovery.listeners.get("topic-input:keydown")({key, preventDefault() { keys.push(key); }});
+      if (key === "ArrowDown") {
+        assert.equal(input.getAttribute("aria-activedescendant"), results.children[0].id);
+        assert.equal(results.children[0].getAttribute("aria-selected"), "true");
+      }
+    }
+    assert.deepEqual(keys, ["ArrowDown", "Enter"]);
+    assert.equal(input.value, "Go");
+    assert.equal(button.textContent, "View Reading");
+    assert.equal(results.hidden, true);
+    input.value = "";
+    await recovery.listeners.get("topic-input:input")();
+    assert.equal(button.disabled, true);
+  }
+  console.log("Actual home script passed: network options, ArrowDown/ArrowUp bounds, Enter selection, Escape dismissal, accessible active state, colliding names, and null/empty response recovery with real search responses.");
 }
 
 testAutocomplete().catch(error => { console.error(error); process.exitCode = 1; });

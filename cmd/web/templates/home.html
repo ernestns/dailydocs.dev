@@ -248,7 +248,8 @@
       try {
         const response = await fetch("/topics/search?q=" + encodeURIComponent(value), { signal: controller.signal });
         if (!response.ok) return;
-        matches = await response.json();
+        const topics = await response.json();
+        matches = Array.isArray(topics) ? topics : [];
         renderResults();
         setLookupState();
       } catch (error) {
