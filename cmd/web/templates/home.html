@@ -64,6 +64,10 @@
       background: #1f2933;
       cursor: pointer;
     }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     ul {
       margin: 1.25rem 0 0;
       padding: 0;
@@ -129,6 +133,7 @@
             aria-autocomplete="list"
             aria-expanded="false"
             aria-controls="topic-results"
+            required
           >
           <ul class="topic-results" id="topic-results" role="listbox" hidden></ul>
         </div>
@@ -211,6 +216,7 @@
 
     function setLookupState() {
       const value = input.value.trim().toLowerCase();
+      button.disabled = !value;
       if (!value) {
         button.textContent = "View Reading";
         status.textContent = "";
@@ -230,6 +236,7 @@
     input.addEventListener("input", async () => {
       const value = input.value.trim();
       if (controller) controller.abort();
+      setLookupState();
       if (!value) {
         matches = [];
         renderResults();
@@ -270,6 +277,13 @@
     input.addEventListener("blur", () => {
       window.setTimeout(closeResults, 100);
     });
+
+    document.getElementById("topic-form").addEventListener("submit", (event) => {
+      setLookupState();
+      if (button.disabled) event.preventDefault();
+    });
+    window.addEventListener("pageshow", setLookupState);
+    setLookupState();
   </script>
 </body>
 </html>

@@ -108,25 +108,6 @@ func (a app) homeHandler(w http.ResponseWriter, r *http.Request) {
 	}{Topics: topics})
 }
 
-func (a app) topicsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	topics, err := listRequestedTopics(r.Context(), a.db)
-	if err != nil {
-		log.Printf("list all topics failed: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	renderTemplate(w, topicsTemplate, struct {
-		Topics []topicListItem
-	}{Topics: topics})
-}
-
 func (a app) topicEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -310,6 +291,7 @@ type topicListItem struct {
 	RunStage       string
 	EvaluatedCount int
 	AcceptedCount  int
+	ReadingCount   int
 }
 
 type evaluationResult struct {
@@ -373,58 +355,6 @@ func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]t
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate topics: %w", err)
-	}
-	return topics, nil
-}
-
-func listRequestedTopics(ctx context.Context, conn *sql.DB) ([]topicListItem, error) {
-	if err := topicsearch.ExpireStaleRunningSearches(ctx, conn, time.Now().UTC()); err != nil {
-		return nil, err
-	}
-
-	rows, err := conn.QueryContext(ctx, `
-		SELECT
-			t.slug,
-			t.name,
-			t.status,
-			COALESCE((
-				SELECT sr.status
-				FROM topic_search_runs sr
-				WHERE sr.topic_id = t.id
-				ORDER BY sr.started_at DESC, sr.id DESC
-				LIMIT 1
-			), '') AS run_status,
-			COALESCE((
-				SELECT sr.stage
-				FROM topic_search_runs sr
-				WHERE sr.topic_id = t.id
-				ORDER BY sr.started_at DESC, sr.id DESC
-				LIMIT 1
-			), '') AS run_stage,
-			COUNT(r.id) AS evaluated_count,
-			COALESCE(SUM(r.accepted), 0) AS accepted_count
-		FROM topics t
-		LEFT JOIN topic_search_results r ON r.topic_id = t.id
-		WHERE t.status != 'disabled'
-		GROUP BY t.id
-		ORDER BY t.updated_at DESC, t.name ASC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("query requested topics: %w", err)
-	}
-	defer rows.Close()
-
-	var topics []topicListItem
-	for rows.Next() {
-		var topic topicListItem
-		if err := rows.Scan(&topic.Slug, &topic.Name, &topic.Status, &topic.RunStatus, &topic.RunStage, &topic.EvaluatedCount, &topic.AcceptedCount); err != nil {
-			return nil, fmt.Errorf("scan requested topic: %w", err)
-		}
-		topic.StatusLabel = topicStatusLabel(topic.Status, topic.RunStatus, topic.RunStage)
-		topics = append(topics, topic)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate requested topics: %w", err)
 	}
 	return topics, nil
 }

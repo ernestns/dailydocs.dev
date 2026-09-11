@@ -12,7 +12,7 @@
       background: #f7f8fa;
     }
     main {
-      width: min(42rem, 100%);
+      width: min(58rem, 100%);
       margin: 0 auto;
       padding: 2rem;
       box-sizing: border-box;
@@ -35,6 +35,15 @@
       border-collapse: collapse;
       background: #ffffff;
     }
+    .table-scroll { overflow-x: auto; }
+    form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; margin-bottom: 1rem; }
+    label { display: grid; gap: 0.3rem; }
+    input, select, button { padding: 0.65rem; border: 1px solid #cbd2d9; border-radius: 6px; font: inherit; }
+    button { color: #ffffff; background: #1f2933; cursor: pointer; }
+    nav { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0; }
+    [aria-disabled="true"], small { color: #52606d; }
+    small { display: block; margin-top: 0.25rem; text-transform: none; }
+    .summary { margin-bottom: 0.75rem; }
     th,
     td {
       padding: 0.75rem;
@@ -70,31 +79,64 @@
 <body>
   <main>
     <h1>Topics</h1>
+    <form method="get" action="/topics" aria-label="Filter topics">
+      <label for="catalog-query">Search topics
+        <input type="search" name="q" id="catalog-query" value="{{.Query}}" placeholder="Name or topic URL">
+      </label>
+      <label for="catalog-status">Status
+        <select name="status" id="catalog-status">
+          <option value="" {{if eq .Status ""}}selected{{end}}>All statuses</option>
+          <option value="active" {{if eq .Status "active"}}selected{{end}}>Active catalogs</option>
+          <option value="queued" {{if eq .Status "queued"}}selected{{end}}>Not generated</option>
+          <option value="searching" {{if eq .Status "searching"}}selected{{end}}>Processing</option>
+          <option value="failed" {{if eq .Status "failed"}}selected{{end}}>Failed</option>
+        </select>
+      </label>
+      <button type="submit">Apply filters</button>
+      {{if or .Query .Status}}<a href="/topics">Clear filters</a>{{end}}
+    </form>
+    <p class="summary">{{.Start}}–{{.End}} of {{.Total}} topics</p>
     {{if .Topics}}
+    <div class="table-scroll" role="region" aria-label="Topic catalog" tabindex="0">
     <table>
       <thead>
         <tr>
           <th>Topic</th>
           <th>Status</th>
+          <th>Readings</th>
           <th>Accepted</th>
           <th>Candidates</th>
         </tr>
       </thead>
       <tbody>
         {{range .Topics}}
-        <tr>
+        <tr data-topic-row>
           <td>
             <a href="/{{.Slug}}">{{.Name}}</a>
+            {{if eq .ReadingCount 0}}<small>No readings yet</small>{{end}}
           </td>
-          <td class="status">{{.StatusLabel}}</td>
+          <td class="status">{{if and (eq .Status "queued") (eq .ReadingCount 0)}}Not generated{{else if and (eq .Status "active") (lt .ReadingCount 2)}}Needs more readings{{else}}{{.StatusLabel}}{{end}}
+            {{if and (lt .ReadingCount 2) (ne .Status "active") (ne .Status "searching") (gt .ReadingCount 0)}}<small>Needs more readings</small>{{end}}
+          </td>
+          <td><a href="/{{.Slug}}">{{.ReadingCount}}</a></td>
           <td class="count-cell"><a href="/topics/{{.Slug}}/evaluations">{{.AcceptedCount}}</a></td>
           <td class="count-cell"><a href="/topics/{{.Slug}}/evaluations">{{.EvaluatedCount}}</a></td>
         </tr>
         {{end}}
       </tbody>
     </table>
+    </div>
     {{else}}
+    {{if or .Query .Status}}<p>No topics match these filters.</p>{{else}}
     <p>No topics yet.</p>
+    {{end}}
+    {{end}}
+    {{if gt .TotalPages 1}}
+    <nav aria-label="Topic pages">
+      {{if .PreviousURL}}<a href="{{.PreviousURL}}" rel="prev">Previous page</a>{{else}}<span aria-disabled="true">Previous page</span>{{end}}
+      <span aria-current="page">Page {{.Page}} of {{.TotalPages}}</span>
+      {{if .NextURL}}<a href="{{.NextURL}}" rel="next">Next page</a>{{else}}<span aria-disabled="true">Next page</span>{{end}}
+    </nav>
     {{end}}
     <p><a href="/">Home</a></p>
   </main>

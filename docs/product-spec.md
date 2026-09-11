@@ -259,6 +259,11 @@ Users should be able to tell that a missing topic has been enqueued.
 
 A topic request should not require an account.
 
+The topic catalog shows 50 topics per page, ordered by name with a stable ID tie-breaker.
+Name/slug search and status filters compose with pagination; clearing filters returns to the full catalog.
+The catalog includes topics without readings and distinguishes active reading counts from accepted candidate counts.
+Stored active catalogs with fewer than two readings are labeled as needing more readings; queued topics without readings are shown as not generated.
+
 ## Link Validation
 
 The validator is a separate command mode in the DailyDocs binary.
