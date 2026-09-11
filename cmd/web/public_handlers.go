@@ -66,7 +66,7 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	feedback, feedbackErr := loadQueuedTopic(r.Context(), a.db, topic)
+	feedback, feedbackErr := a.loadTopicStatus(r.Context(), topic)
 	if feedbackErr != nil {
 		log.Printf("load reading feedback failed: %v", feedbackErr)
 	}
@@ -77,7 +77,7 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic string) {
-	queued, err := loadQueuedTopic(r.Context(), a.db, topic)
+	queued, err := a.loadTopicStatus(r.Context(), topic)
 	if errors.Is(err, sql.ErrNoRows) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
@@ -156,7 +156,7 @@ func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queued, err := loadQueuedTopic(r.Context(), a.db, slug)
+	queued, err := a.loadTopicStatus(r.Context(), slug)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
@@ -195,20 +195,27 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	match, ok, err := findTopic(r.Context(), a.db, topic)
-	if err != nil {
-		log.Printf("find topic failed: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if !ok {
-		if r.Method == http.MethodGet {
-			http.Redirect(w, r, "/"+slugFromTopicName(topic), http.StatusSeeOther)
+	// Form input is a subject name, so legacy lossy slugs cannot capture a
+	// different valid subject. Direct GET URLs keep their historical identity.
+	if r.Method == http.MethodPost {
+		slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, topic)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		queued, queueErr := a.queueTopic(r.Context(), topic)
-		if queueErr != nil {
-			log.Printf("queue topic failed: %v", queueErr)
+		var active bool
+		if err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=? AND status='active')", slug).Scan(&active); err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if active {
+			// Viewing a saved catalog does not implicitly request a retry.
+			http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
+			return
+		}
+		queued, err := a.queueTopic(r.Context(), topic)
+		if err != nil {
+			log.Printf("queue topic failed: %v", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -218,8 +225,17 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
 		return
 	}
-
-	http.Redirect(w, r, "/"+match.Slug, http.StatusSeeOther)
+	match, ok, err := findTopic(r.Context(), a.db, topic)
+	if err != nil {
+		log.Printf("find topic failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	slug := slugFromTopicName(topic)
+	if ok {
+		slug = match.Slug
+	}
+	http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
 }
 
 func (a app) topicStatusHandler(w http.ResponseWriter, r *http.Request, slug string) {
@@ -227,7 +243,7 @@ func (a app) topicStatusHandler(w http.ResponseWriter, r *http.Request, slug str
 }
 
 func (a app) renderTopicStatus(w http.ResponseWriter, r *http.Request, slug string) {
-	queued, err := loadQueuedTopic(r.Context(), a.db, slug)
+	queued, err := a.loadTopicStatus(r.Context(), slug)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
@@ -308,6 +324,7 @@ type evaluationResult struct {
 }
 
 type queuedTopicView struct {
+	Pending        bool
 	AvailableCount int
 	Message        string
 	InvalidTopic   bool
@@ -452,7 +469,7 @@ func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, err
 	if err != nil {
 		return queuedTopicView{}, fmt.Errorf("upsert queued topic: %w", err)
 	}
-	return loadQueuedTopic(ctx, a.db, slug)
+	return a.loadTopicStatus(ctx, slug)
 }
 
 func parseTopicEvaluationsPath(path string) (string, bool) {

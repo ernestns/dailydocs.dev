@@ -12,7 +12,7 @@ var (
 	homeTemplate             = mustTemplate("templates/home.html")
 	topicsTemplate           = mustTemplate("templates/topics.html")
 	topicEvaluationsTemplate = mustTemplate("templates/topic_evaluations.html")
-	readingTemplate          = mustTemplate("templates/reading.html")
+	readingTemplate          = mustTemplate("templates/reading.html", "templates/topic_status.html")
 	queuedTopicTemplate      = mustTemplate("templates/queued_topic.html", "templates/topic_status.html")
 	topicStatusTemplate      = mustTemplate("templates/topic_status.html")
 )

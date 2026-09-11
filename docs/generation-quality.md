@@ -97,6 +97,11 @@ This is not a taxonomy or an authoritative factual validator.
 
 Deterministic tests cover 0/1/2/3 results, target/maximum stopping, duplicate-only output, provider responses exceeding requested limits, failed later query/review groups and reviewer batches, cancellation cleanup, invalid input with zero provider calls, planner invalidity versus outage, and preserved legacy IDs/assignments.
 The captured SQLite replay deliberately consumes the full recorded response with explicit fixture options; it is not a simulation of all current default retrieval limits.
+Independent interface probes also exposed waiting retries that did not poll and typed C/NET names captured by older C++/.NET slugs.
+Explicit asynchronous work is now tracked per topic in memory, without rewriting database status or scheduling the old backlog; redirects and status panels poll pending retries and suppress duplicate jobs.
+Saved reading pages retain their links while displaying the same updating panel.
+Typed names are resolved before the existing active-catalog shortcut, and autocomplete matches names; direct historical URLs remain unchanged.
+Viewing an existing named catalog still does not implicitly retry generation: its process button is the explicit action.
 No new live-provider quality evaluation has been performed for this revision at this point.
 
 ## Repeating a bounded evaluation

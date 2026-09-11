@@ -18,8 +18,9 @@ function setup(restoredValue = "") {
   const document = { getElementById(id) { return elements[id]; }, createElement() { return element("option"); } };
   const window = { addEventListener(name, callback) { listeners.set("window:" + name, callback); }, setTimeout() {} };
   // Leave autocomplete pending: enable/disable must not wait for the network.
-  vm.runInNewContext(script, {document, window, AbortController, fetch() { return new Promise(() => {}); }});
-  return { elements, listeners };
+  const context = vm.createContext({document, window, AbortController, fetch() { return new Promise(() => {}); }});
+  vm.runInContext(script, context);
+  return { elements, listeners, run(code) { return vm.runInContext(code, context); } };
 }
 
 const {elements, listeners} = setup();
@@ -44,3 +45,12 @@ input.value = ""; listeners.get("window:pageshow")();
 assert.equal(button.disabled, true, "restored blank value must disable on pageshow");
 assert.equal(setup("C++").elements["topic-button"].disabled, false, "initial restored value must work");
 console.log("Actual home script passed: initial/whitespace disabled, immediate typing/clearing, short and punctuated names, submit guard, and restored values.");
+
+const identity = setup("C");
+identity.run('matches = [{slug: "c", name: "C++"}];');
+assert.equal(identity.run('exactMatch()'), undefined, "legacy C++ slug cannot label C as an existing subject");
+identity.elements["topic-input"].value = "C++";
+assert.equal(identity.run('exactMatch().name'), "C++", "same-name legacy topic still matches");
+identity.elements["topic-input"].value = "NET";
+identity.run('matches = [{slug: "net", name: ".NET"}];');
+assert.equal(identity.run('exactMatch()'), undefined, "legacy .NET slug cannot capture NET");

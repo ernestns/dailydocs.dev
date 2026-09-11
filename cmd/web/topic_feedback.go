@@ -57,3 +57,23 @@ func addTopicFeedback(ctx context.Context, conn *sql.DB, topicID int64, runStatu
 	}
 	return rows.Err()
 }
+
+// Pending work exists only for an explicit request in this process, never for
+// historical queued rows. Keep database/run status unchanged while it waits.
+func (a app) loadTopicStatus(ctx context.Context, slug string) (queuedTopicView, error) {
+	topic, err := loadQueuedTopic(ctx, a.db, slug)
+	if err != nil {
+		return topic, err
+	}
+	if a.pendingSearches != nil {
+		_, topic.Pending = a.pendingSearches.Load(slug)
+		if topic.Pending {
+			topic.CanProcess = false
+			if !topic.IsProcessing {
+				topic.StatusLabel = "Waiting for worker"
+				topic.Message = "This explicit request is waiting for the current worker. The daily limit is checked before generation starts."
+			}
+		}
+	}
+	return topic, nil
+}

@@ -1,7 +1,7 @@
 {{define "topic_status"}}
 <div
   id="topic-status"
-  {{if or .IsProcessing (eq .Status "queued")}}data-on-interval__duration.2s="@get('/topics/{{.Slug}}/status')"{{end}}
+  {{if or .Pending .IsProcessing (eq .Status "queued")}}data-on-interval__duration.2s="@get('/topics/{{.Slug}}/status')"{{end}}
 >
   <p class="status">{{.StatusLabel}}</p>
   {{if .Message}}<p>{{.Message}}</p>{{end}}
@@ -13,6 +13,8 @@
   </form>
   {{else if .InvalidTopic}}
   <p>The search did not continue for this request.</p>
+  {{else if and .Pending (not .IsProcessing)}}
+  <p>Your request will update here. Saved readings remain available.</p>
   {{else if eq .Status "active"}}
   {{if ge .AvailableCount 2}}<p>This topic is ready.</p>{{end}}
   <p><a class="button" href="/{{.Slug}}">View reading</a></p>

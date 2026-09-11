@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.TopicName}} - DailyDocs</title>
+  {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing}}
+  <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"></script>
+  {{end}}
   <style>
     body {
       margin: 0;
@@ -88,12 +91,8 @@
         </p>
         <span class="button">Read</span>
       </a>
-      {{if .Feedback.CanProcess}}
-      <p>{{.Feedback.Message}}</p>
-      <form method="post" action="/process-topic">
-        <input type="hidden" name="topic" value="{{.TopicSlug}}">
-        <button type="submit">Process topic</button>
-      </form>
+      {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing}}
+      {{template "topic_status" .Feedback}}
       {{end}}
       <a class="home-link" href="/">Home</a>
     </article>

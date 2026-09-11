@@ -27,6 +27,7 @@ func newTestHandlerWithProviderMode(conn *sql.DB, provider topicsearch.Provider,
 		db:              conn,
 		now:             func() time.Time { return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC) },
 		searchMu:        &sync.Mutex{},
+		pendingSearches: &sync.Map{},
 		searchProvider:  provider,
 		asyncProcessing: asyncProcessing,
 	}

@@ -25,6 +25,7 @@ type app struct {
 	db              *sql.DB
 	now             func() time.Time
 	searchMu        *sync.Mutex
+	pendingSearches *sync.Map
 	searchProvider  topicsearch.Provider
 	searchPlanner   topicsearch.Planner
 	searchReviewer  topicsearch.Reviewer
@@ -78,6 +79,7 @@ func main() {
 		db:              conn,
 		now:             func() time.Time { return time.Now().UTC() },
 		searchMu:        &sync.Mutex{},
+		pendingSearches: &sync.Map{},
 		searchProvider:  searchProvider,
 		searchPlanner:   searchPlanner,
 		searchReviewer:  searchReviewer,
@@ -165,7 +167,15 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 		a.processQueuedTopic(context.Background(), slug)
 		return true
 	}
+	if a.pendingSearches != nil {
+		if _, pending := a.pendingSearches.LoadOrStore(slug, true); pending {
+			return false
+		}
+	}
 	go func() {
+		if a.pendingSearches != nil {
+			defer a.pendingSearches.Delete(slug)
+		}
 		// SearchTopic starts its bounded deadline after this job acquires the worker.
 		a.processQueuedTopic(context.Background(), slug)
 	}()

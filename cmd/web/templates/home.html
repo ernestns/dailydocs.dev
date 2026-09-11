@@ -154,7 +154,7 @@
 
     function exactMatch() {
       const value = input.value.trim().toLowerCase();
-      return matches.find((topic) => topic.slug.toLowerCase() === value || topic.name.toLowerCase() === value);
+      return matches.find((topic) => topic.name.toLowerCase() === value);
     }
 
     function closeResults() {
