@@ -9,7 +9,7 @@ import (
 )
 
 // TestLiveSQLiteQuality is opt-in because it spends provider credits.
-// It uses a disposable database, one planner/reviewer call, and at most four searches.
+// See docs/generation-quality.md for evaluation scope and interpretation.
 func TestLiveSQLiteQuality(t *testing.T) {
 	if os.Getenv("DAILYDOCS_LIVE_QUALITY") != "1" {
 		t.Skip("set DAILYDOCS_LIVE_QUALITY=1 explicitly to spend provider credits")
@@ -62,7 +62,6 @@ type qualityPlanner struct {
 	OpenAITopicPlanner
 	output PlanOutput
 }
-
 
 func (p *qualityPlanner) Plan(ctx context.Context, topic string) (PlanOutput, error) {
 	output, err := p.OpenAITopicPlanner.Plan(ctx, topic)
