@@ -151,7 +151,7 @@ func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := strings.TrimSpace(r.FormValue("topic"))
-	if !topicPathPattern.MatchString(slug) {
+	if !topicname.IsSlug(slug) {
 		http.Error(w, "invalid topic", http.StatusBadRequest)
 		return
 	}
@@ -194,15 +194,15 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, topic)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	// Form input is a subject name, so legacy lossy slugs cannot capture a
 	// different valid subject. Direct GET URLs keep their historical identity.
 	if r.Method == http.MethodPost {
-		slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, topic)
-		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
 		var active bool
 		if err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=? AND status='active')", slug).Scan(&active); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -224,16 +224,6 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
 		return
-	}
-	match, ok, err := findTopic(r.Context(), a.db, topic)
-	if err != nil {
-		log.Printf("find topic failed: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	slug := slugFromTopicName(topic)
-	if ok {
-		slug = match.Slug
 	}
 	http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
 }
@@ -281,7 +271,7 @@ func parseReadingPath(path string) (topic string, date string, ok bool) {
 	if len(parts) != 1 && len(parts) != 2 {
 		return "", "", false
 	}
-	if !topicPathPattern.MatchString(parts[0]) {
+	if !topicname.IsSlug(parts[0]) {
 		return "", "", false
 	}
 	if len(parts) == 2 {
@@ -480,7 +470,7 @@ func parseTopicEvaluationsPath(path string) (string, bool) {
 	}
 	slug := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
 	slug = strings.Trim(slug, "/")
-	if !topicPathPattern.MatchString(slug) {
+	if !topicname.IsSlug(slug) {
 		return "", false
 	}
 	return slug, true
@@ -494,7 +484,7 @@ func parseTopicStatusPath(path string) (string, bool) {
 	}
 	slug := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
 	slug = strings.Trim(slug, "/")
-	if !topicPathPattern.MatchString(slug) {
+	if !topicname.IsSlug(slug) {
 		return "", false
 	}
 	return slug, true
@@ -550,30 +540,6 @@ func topicStatusLabel(topicStatus string, runStatus string, runStage string) str
 		return runStage
 	}
 	return topicStatus
-}
-
-func findTopic(ctx context.Context, conn *sql.DB, value string) (topicOption, bool, error) {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "" {
-		return topicOption{}, false, nil
-	}
-
-	var topic topicOption
-	err := conn.QueryRowContext(ctx, `
-		SELECT slug, name
-		FROM topics
-		WHERE status = 'active'
-			AND (slug = ? OR lower(name) = ?)
-		ORDER BY CASE WHEN slug = ? THEN 0 ELSE 1 END, name ASC
-		LIMIT 1
-	`, value, value, value).Scan(&topic.Slug, &topic.Name)
-	if err == nil {
-		return topic, true, nil
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return topicOption{}, false, nil
-	}
-	return topicOption{}, false, fmt.Errorf("query topic: %w", err)
 }
 
 func renderTemplate(w http.ResponseWriter, tmpl *template.Template, data any) {

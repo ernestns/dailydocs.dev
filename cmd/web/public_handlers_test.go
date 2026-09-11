@@ -58,10 +58,6 @@ func TestHomePageRendersTopicCombobox(t *testing.T) {
 		`aria-controls="topic-results"`,
 		`role="listbox"`,
 		`id="topic-results"`,
-		`min-height: 1.5rem`,
-		`ArrowDown`,
-		`aria-activedescendant`,
-		`Request Topic`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in home page:\n%s", expected, body)

@@ -3,12 +3,17 @@ package topicname
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
 var ErrInvalid = errors.New("enter a topic name, not a URL, path, or instruction")
+
+var slugPattern = regexp.MustCompile(`^[\pL\pN][\pL\pN-]*$`)
+
+func IsSlug(value string) bool { return slugPattern.MatchString(value) }
 
 // Validate rejects clear non-topic syntax, not unfamiliar subjects or short names.
 // Semantic uncertainty belongs to the planner; a provider failure proves nothing about validity.
@@ -18,6 +23,9 @@ func Validate(value string) error {
 		return ErrInvalid
 	}
 	lower := strings.ToLower(value)
+	if len(lower) >= 3 && lower[0] >= 'a' && lower[0] <= 'z' && lower[1] == ':' && (lower[2] == '\\' || lower[2] == '/') {
+		return ErrInvalid
+	}
 	if strings.Contains(lower, "://") || strings.HasPrefix(value, "<") {
 		return ErrInvalid
 	}

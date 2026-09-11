@@ -234,3 +234,133 @@ func TestSearchResponseRespectsRequestedLimit(t *testing.T) {
 		t.Fatal(len(got), err)
 	}
 }
+
+type plannerFunc func(context.Context, string) (PlanOutput, error)
+
+func (f plannerFunc) Plan(ctx context.Context, topic string) (PlanOutput, error) {
+	return f(ctx, topic)
+}
+
+func TestRunCleanupCoversPostPlanAndFinalizationFailures(t *testing.T) {
+	for _, failure := range []string{"cancellation", "query update", "completion update"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conn := openTopicSearchTestDB(t, ctx)
+			defer conn.Close()
+			conn.SetMaxOpenConns(1)
+			if _, err := conn.Exec(`
+				INSERT INTO topics(id,slug,name,status) VALUES(1,'example','Example','active');
+				INSERT INTO pages(topic_id,title,url,reading_order) VALUES
+				(1,'Saved one','https://docs.example.org/saved-one',1),
+				(1,'Saved two','https://docs.example.org/saved-two',2);
+			`); err != nil {
+				t.Fatal(err)
+			}
+			p := &focusedProvider{}
+			planner := plannerFunc(func(context.Context, string) (PlanOutput, error) {
+				if failure == "cancellation" {
+					cancel()
+				}
+				return PlanOutput{}, nil
+			})
+			if failure != "cancellation" {
+				trigger := `CREATE TRIGGER fail_update BEFORE UPDATE OF query ON topic_search_runs BEGIN SELECT RAISE(FAIL,'query unavailable'); END`
+				if failure == "completion update" {
+					trigger = `CREATE TRIGGER fail_update BEFORE UPDATE ON topic_search_runs WHEN NEW.status='completed' BEGIN SELECT RAISE(FAIL,'completion unavailable'); END`
+				}
+				if _, err := conn.Exec(trigger); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := SearchTopic(ctx, conn, "Example", Options{Provider: p, Planner: planner, Now: fixedTopicSearchTime})
+			if err == nil || result.Status != "failed" || result.TopicID != 1 || result.RunID == 0 {
+				t.Fatalf("failure lost its run identity: %+v %v", result, err)
+			}
+			if failure == "cancellation" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("original cancellation lost: %v", err)
+			}
+			if failure != "completion update" && p.calls != 0 {
+				t.Fatalf("provider ran after failed planning transition: %d", p.calls)
+			}
+			var status, stage, diagnostic, topicStatus string
+			var completed bool
+			if err := conn.QueryRow(`SELECT r.status,r.stage,r.error,r.completed_at IS NOT NULL,t.status FROM topic_search_runs r JOIN topics t ON t.id=r.topic_id WHERE r.id=?`, result.RunID).Scan(&status, &stage, &diagnostic, &completed, &topicStatus); err != nil {
+				t.Fatal(err)
+			}
+			if status != "failed" || stage != "" || diagnostic == "" || !completed || topicStatus != "active" {
+				t.Fatal("run not finalized or saved catalog hidden", status, stage, diagnostic, completed, topicStatus)
+			}
+			if failure != "cancellation" {
+				if _, err := conn.Exec("DROP TRIGGER fail_update"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = SearchTopic(context.Background(), conn, "Other", Options{Provider: &focusedProvider{}, Planner: sixIntents(), Now: func() time.Time { return fixedTopicSearchTime().Add(6 * time.Minute) }})
+			if err != nil {
+				t.Fatal("failure retained global running restriction", err)
+			}
+		})
+	}
+}
+
+func TestProcessingPreservesSelectedDuplicateNameCatalog(t *testing.T) {
+	for _, entry := range []string{"explicit active", "explicit failed", "next queued", "typed name"} {
+		t.Run(entry, func(t *testing.T) {
+			ctx := context.Background()
+			conn := openTopicSearchTestDB(t, ctx)
+			defer conn.Close()
+			status := "active"
+			if entry == "explicit failed" {
+				status = "failed"
+			} else if entry == "next queued" {
+				status = "queued"
+			}
+			if _, err := conn.Exec(`
+				INSERT INTO topics(id,slug,name,status) VALUES(1,'first','Example','active'),(2,'second','Example',?);
+				INSERT INTO pages(id,topic_id,title,url,reading_order) VALUES
+				(11,1,'First saved reading','https://docs.example.org/first',1),
+				(21,2,'Second saved reading','https://docs.example.org/second',1);
+				INSERT INTO daily_readings(topic_id,reading_date,page_id) VALUES(1,'2026-06-27',11),(2,'2026-06-27',21);
+			`, status); err != nil {
+				t.Fatal(err)
+			}
+			opts := Options{Provider: fakeProvider{results: []SearchResult{
+				{Title: "Guide one", URL: "https://docs.example.org/new-one"},
+				{Title: "Guide two", URL: "https://docs.example.org/new-two"},
+			}}, Now: fixedTopicSearchTime}
+			var result Result
+			var err error
+			wantID, wantSlug := int64(2), "second"
+			switch entry {
+			case "next queued":
+				var queued QueueResult
+				queued, err = ProcessNextQueuedTopic(ctx, conn, opts)
+				result = queued.Result
+			case "typed name":
+				result, err = SearchTopic(ctx, conn, "Example", opts)
+				wantID, wantSlug = 1, "first"
+			default:
+				var queued QueueResult
+				queued, err = ProcessQueuedTopic(ctx, conn, "second", opts)
+				result = queued.Result
+			}
+			if err != nil || result.TopicID != wantID || result.TopicSlug != wantSlug {
+				t.Fatalf("processed a different catalog: %+v %v", result, err)
+			}
+			for _, id := range []int64{1, 2} {
+				want := 1
+				if id == wantID {
+					want = 3
+				}
+				if got, err := AvailableReadings(ctx, conn, id); err != nil || got != want {
+					t.Fatalf("catalog %d readings=%d want=%d err=%v", id, got, want, err)
+				}
+			}
+			var unchanged int
+			if err := conn.QueryRow(`SELECT count(*) FROM daily_readings WHERE (topic_id=1 AND page_id=11) OR (topic_id=2 AND page_id=21)`).Scan(&unchanged); err != nil || unchanged != 2 {
+				t.Fatal("historical assignments changed", unchanged, err)
+			}
+		})
+	}
+}

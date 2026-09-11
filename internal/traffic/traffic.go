@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ernestns/daily-docs/internal/topicname"
 )
 
 const (
@@ -21,6 +23,7 @@ const (
 	pageLimit     = 256
 	referrerLimit = 128
 	queueSize     = 1024
+	maxLabelBytes = 256
 	otherLabel    = "(other)"
 )
 
@@ -45,6 +48,7 @@ type writer struct {
 	pages, referrers map[string]bool
 	errors           int64
 	lastError        error
+	labelsLoaded     bool
 }
 
 // New starts one writer. Requests only submit to a bounded nonblocking channel.
@@ -120,11 +124,25 @@ func (w *writer) rotate(day string) {
 	w.pages = make(map[string]bool)
 	w.referrers = make(map[string]bool)
 	w.pending[key{kind: "dropped", audience: "all"}] = dropped
+	w.labelsLoaded = false
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	pages, refs, err := loadLabels(ctx, w.db, day)
+	if err != nil {
+		w.lastError = err
+		w.errors++
+		return
+	}
+	w.pages, w.referrers = pages, refs
+	w.labelsLoaded = true
 }
 
 func timeForDay(day string) time.Time { t, _ := time.Parse(time.DateOnly, day); return t }
 
 func boundedLabel(label string, seen map[string]bool, limit int) string {
+	if len(label) > maxLabelBytes {
+		return otherLabel
+	}
 	if label == otherLabel || seen[label] {
 		return label
 	}
@@ -138,6 +156,9 @@ func boundedLabel(label string, seen map[string]bool, limit int) string {
 func (w *writer) add(e event) {
 	w.rotate(e.day)
 	w.pending[key{kind: "total", audience: e.audience}]++
+	if !w.labelsLoaded {
+		e.page, e.referrer = otherLabel, otherLabel
+	}
 	page := boundedLabel(e.page, w.pages, pageLimit)
 	referrer := boundedLabel(e.referrer, w.referrers, referrerLimit)
 	w.pending[key{kind: "page", label: page, audience: e.audience}]++
@@ -158,29 +179,8 @@ func (w *writer) flush(now time.Time) (err error) {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Load admitted labels inside the same transaction, so caps survive restarts.
-	pages, refs := make(map[string]bool), make(map[string]bool)
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT kind, label FROM traffic_daily WHERE day = ? AND kind IN ('page','referrer') AND label != ?`, w.day, otherLabel)
+	pages, refs, err := loadLabels(ctx, tx, w.day)
 	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var kind, label string
-		if err = rows.Scan(&kind, &label); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		if kind == "page" {
-			pages[label] = true
-		} else {
-			refs[label] = true
-		}
-	}
-	if err = rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err = rows.Close(); err != nil {
 		return err
 	}
 	batch := make(map[key]int64)
@@ -220,11 +220,34 @@ func (w *writer) flush(now time.Time) (err error) {
 	}
 	w.pending = make(map[key]int64)
 	w.pages, w.referrers = pages, refs
+	w.labelsLoaded = true
 	w.errors = 0
 	return nil
 }
 
-var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,79}$`)
+func loadLabels(ctx context.Context, conn interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, day string) (map[string]bool, map[string]bool, error) {
+	pages, refs := make(map[string]bool), make(map[string]bool)
+	rows, err := conn.QueryContext(ctx, `SELECT DISTINCT kind, label FROM traffic_daily WHERE day = ? AND kind IN ('page','referrer') AND label != ?`, day, otherLabel)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, label string
+		if err := rows.Scan(&kind, &label); err != nil {
+			return nil, nil, err
+		}
+		if kind == "page" {
+			boundedLabel(label, pages, pageLimit)
+		} else {
+			boundedLabel(label, refs, referrerLimit)
+		}
+	}
+	return pages, refs, rows.Err()
+}
+
 var domainLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func validDomain(host string) bool {
@@ -244,10 +267,10 @@ func canonicalPage(path string) string {
 		return path
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 3 && parts[0] == "topics" && parts[2] == "evaluations" && slugPattern.MatchString(parts[1]) {
+	if len(parts) == 3 && parts[0] == "topics" && parts[2] == "evaluations" && topicname.IsSlug(parts[1]) {
 		return "/topics/" + parts[1] + "/evaluations"
 	}
-	if len(parts) < 1 || len(parts) > 2 || !slugPattern.MatchString(parts[0]) {
+	if len(parts) < 1 || len(parts) > 2 || !topicname.IsSlug(parts[0]) {
 		return ""
 	}
 	switch parts[0] {
@@ -330,6 +353,9 @@ func (c *Collector) Middleware(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		if sw.status != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") || c.closing.Load() {
 			return
+		}
+		if len(page) > maxLabelBytes {
+			page = otherLabel
 		}
 		e := event{day: c.now().UTC().Format(time.DateOnly), page: page, referrer: referral(r.Referer(), r.Host), audience: audience(r.UserAgent())}
 		select {

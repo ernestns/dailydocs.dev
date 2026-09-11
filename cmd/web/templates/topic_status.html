@@ -1,7 +1,7 @@
 {{define "topic_status"}}
 <div
   id="topic-status"
-  {{if or .Pending .IsProcessing (eq .Status "queued")}}data-on-interval__duration.2s="@get('/topics/{{.Slug}}/status')"{{end}}
+  {{if or .Pending .IsProcessing}}data-on-interval__duration.2s="@get('/topics/{{.Slug}}/status')"{{end}}
 >
   <p class="status">{{.StatusLabel}}</p>
   {{if .Message}}<p>{{.Message}}</p>{{end}}

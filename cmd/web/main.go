@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"sync"
 	"syscall"
 	"time"
@@ -16,8 +15,6 @@ import (
 	"github.com/ernestns/daily-docs/internal/db"
 	"github.com/ernestns/daily-docs/internal/topicsearch"
 )
-
-var topicPathPattern = regexp.MustCompile(`^[\pL\pN][\pL\pN-]*$`)
 
 const topicProcessingDailyLimit = 20
 

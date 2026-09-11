@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func seedCatalog(t *testing.T, conn *sql.DB, count int) {
@@ -165,5 +166,55 @@ func TestTopicCatalogTiedNamesStayOrderedAndPunctuationIsSearchable(t *testing.T
 		if err != nil || page.Total != 1 || len(page.Topics) != 1 || page.Topics[0].Name != name {
 			t.Fatalf("literal short search %q failed: %+v %v", name, page, err)
 		}
+	}
+}
+
+func TestTopicCatalogCountsDistinctAvailableReadings(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	conn.SetMaxOpenConns(1)
+	seedCatalog(t, conn, 50)
+	if _, err := conn.Exec(`
+		INSERT INTO topics(id,slug,name,status) VALUES(51,'sqlite','Z SQLite','active');
+		INSERT INTO pages(id,topic_id,title,url,reading_order,active) VALUES
+		(101,51,'WAL','http://www.sqlite.org/wal.html',1,1),
+		(102,51,'WAL alias','https://sqlite.org/wal.html',2,1),
+		(103,51,'Inactive reading','https://sqlite.org/eqp.html',3,0);
+		INSERT INTO daily_readings(topic_id,reading_date,page_id) VALUES(51,'2026-06-27',101);
+		INSERT INTO topic_search_runs(id,topic_id,provider,query,status) VALUES(1,51,'fake','SQLite','completed');
+		INSERT INTO topic_search_results(topic_id,search_run_id,title,url,source,rank,accepted) VALUES
+		(51,1,'WAL','http://www.sqlite.org/wal.html','sqlite.org',1,1),
+		(51,1,'WAL alias','https://sqlite.org/wal.html','sqlite.org',2,1);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := listRequestedTopics(ctx, conn, topicCatalogFilter{Page: 2})
+	if err != nil || page.Total != 51 || len(page.Topics) != 1 {
+		t.Fatal(page, err)
+	}
+	topic := page.Topics[0]
+	if topic.Slug != "sqlite" || topic.ReadingCount != 1 || topic.AcceptedCount != 2 || topic.EvaluatedCount != 2 {
+		t.Fatalf("aliases padded the catalog or changed candidate counts: %+v", topic)
+	}
+	body := catalogResponse(t, conn, "/topics?page=2").Body.String()
+	if !strings.Contains(body, "Needs more readings") || !strings.Contains(body, `href="/sqlite">1</a>`) {
+		t.Fatal("catalog overstated readiness", body)
+	}
+	if _, err := conn.Exec(`UPDATE pages SET active=1 WHERE id=103`); err != nil {
+		t.Fatal(err)
+	}
+	page, err = listRequestedTopics(ctx, conn, topicCatalogFilter{Query: "SQLite", Status: "active", Page: 1})
+	if err != nil || len(page.Topics) != 1 || page.Topics[0].ReadingCount != 2 {
+		t.Fatal("distinct document did not restore readiness", page, err)
+	}
+	body = catalogResponse(t, conn, "/topics?q=SQLite&status=active").Body.String()
+	if strings.Contains(body, "Needs more readings") {
+		t.Fatal("usable catalog still shown as insufficient", body)
+	}
+	var pages, assignments int
+	if err := conn.QueryRow(`SELECT (SELECT count(*) FROM pages WHERE topic_id=51),(SELECT count(*) FROM daily_readings WHERE topic_id=51 AND page_id=101)`).Scan(&pages, &assignments); err != nil || pages != 3 || assignments != 1 {
+		t.Fatal("catalog lookup rewrote historical data", pages, assignments, err)
 	}
 }

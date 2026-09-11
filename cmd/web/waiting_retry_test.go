@@ -89,3 +89,63 @@ func TestWaitingRetryKeepsClientUpdated(t *testing.T) {
 		})
 	}
 }
+
+func TestQueuedStatusPollsOnlySubmittedWork(t *testing.T) {
+	ctx := context.Background()
+	conn := openWebTestDB(t, ctx)
+	defer conn.Close()
+	conn.SetMaxOpenConns(1)
+	seedQueuedWebTopic(t, ctx, conn, "rust", "Rust")
+	p := &quantityProvider{count: 3}
+	a := app{db: conn, now: time.Now, searchMu: &sync.Mutex{}, pendingSearches: &sync.Map{}, searchProvider: p, asyncProcessing: true}
+	checkPolling := func(want bool) {
+		t.Helper()
+		for _, path := range []string{"/rust", "/topics/rust/status"} {
+			response := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			if path == "/rust" {
+				a.routeHandler(response, r)
+			} else {
+				a.topicStatusHandler(response, r, "rust")
+			}
+			if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "data-on-interval") != want {
+				t.Fatalf("path=%s polling should be %v: %d %s", path, want, response.Code, response.Body.String())
+			}
+		}
+	}
+	checkPolling(false)
+	for range topicProcessingDailyLimit {
+		if _, err := conn.Exec(`INSERT INTO topic_search_runs(topic_id,provider,query,status,started_at) SELECT id,'fake','prior attempt','failed',? FROM topics WHERE slug='rust'`, time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.searchMu.Lock()
+	var release sync.Once
+	defer release.Do(a.searchMu.Unlock)
+	response := httptest.NewRecorder()
+	a.processTopicHandler(response, topicRequest(http.MethodPost, "/process-topic", "rust"))
+	if response.Code != http.StatusSeeOther {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	checkPolling(true)
+	release.Do(a.searchMu.Unlock)
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, pending := a.pendingSearches.Load("rust"); !pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("capped request did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	checkPolling(false)
+	var status string
+	var runs int
+	if err := conn.QueryRow("SELECT status,(SELECT count(*) FROM topic_search_runs) FROM topics WHERE slug='rust'").Scan(&status, &runs); err != nil {
+		t.Fatal(err)
+	}
+	if status != "queued" || runs != topicProcessingDailyLimit || p.calls != 0 {
+		t.Fatal("capped request changed historical state or spent provider work", status, runs, p.calls)
+	}
+}

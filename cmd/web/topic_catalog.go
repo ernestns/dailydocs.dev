@@ -129,12 +129,11 @@ func listRequestedTopics(ctx context.Context, conn *sql.DB, filter topicCatalogF
    ORDER BY t.name COLLATE NOCASE,t.id
    LIMIT ? OFFSET ?
   )
-  SELECT t.slug,t.name,t.status,
+  SELECT t.id,t.slug,t.name,t.status,
    COALESCE((SELECT sr.status FROM topic_search_runs sr WHERE sr.topic_id=t.id ORDER BY sr.started_at DESC,sr.id DESC LIMIT 1),''),
    COALESCE((SELECT sr.stage FROM topic_search_runs sr WHERE sr.topic_id=t.id ORDER BY sr.started_at DESC,sr.id DESC LIMIT 1),''),
    (SELECT COUNT(*) FROM topic_search_results r WHERE r.topic_id=t.id),
-   (SELECT COUNT(*) FROM topic_search_results r WHERE r.topic_id=t.id AND r.accepted=1),
-   (SELECT COUNT(*) FROM pages p WHERE p.topic_id=t.id AND p.active=1)
+   (SELECT COUNT(*) FROM topic_search_results r WHERE r.topic_id=t.id AND r.accepted=1)
   FROM selected t
   ORDER BY t.name COLLATE NOCASE,t.id
  `, append(args, topicCatalogPageSize, offset)...)
@@ -142,19 +141,29 @@ func listRequestedTopics(ctx context.Context, conn *sql.DB, filter topicCatalogF
 		return page, fmt.Errorf("query topic catalog: %w", err)
 	}
 	defer rows.Close()
+	var topicIDs []int64
 	for rows.Next() {
 		var topic topicListItem
-		if err := rows.Scan(&topic.Slug, &topic.Name, &topic.Status, &topic.RunStatus, &topic.RunStage, &topic.EvaluatedCount, &topic.AcceptedCount, &topic.ReadingCount); err != nil {
+		var topicID int64
+		if err := rows.Scan(&topicID, &topic.Slug, &topic.Name, &topic.Status, &topic.RunStatus, &topic.RunStage, &topic.EvaluatedCount, &topic.AcceptedCount); err != nil {
 			return page, fmt.Errorf("scan topic catalog: %w", err)
 		}
 		topic.StatusLabel = topicStatusLabel(topic.Status, topic.RunStatus, topic.RunStage)
 		page.Topics = append(page.Topics, topic)
+		topicIDs = append(topicIDs, topicID)
 	}
 	if err := rows.Err(); err != nil {
 		return page, fmt.Errorf("iterate topic catalog: %w", err)
 	}
 	if err := rows.Close(); err != nil {
 		return page, err
+	}
+	for i, topicID := range topicIDs {
+		count, err := topicsearch.AvailableReadings(ctx, tx, topicID)
+		if err != nil {
+			return page, fmt.Errorf("count topic readings: %w", err)
+		}
+		page.Topics[i].ReadingCount = count
 	}
 	if err := tx.Commit(); err != nil {
 		return page, fmt.Errorf("finish topic catalog: %w", err)

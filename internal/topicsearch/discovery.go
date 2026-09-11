@@ -42,7 +42,9 @@ func ResolveTopic(ctx context.Context, conn *sql.DB, value string) (string, stri
 }
 
 // AvailableReadings counts the same distinct destinations used by discovery.
-func AvailableReadings(ctx context.Context, conn *sql.DB, topicID int64) (int, error) {
+func AvailableReadings(ctx context.Context, conn interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, topicID int64) (int, error) {
 	rows, err := conn.QueryContext(ctx, "SELECT url FROM pages WHERE topic_id=? AND active=1", topicID)
 	if err != nil {
 		return 0, err

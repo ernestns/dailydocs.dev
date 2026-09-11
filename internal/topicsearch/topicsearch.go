@@ -167,6 +167,15 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 	if err != nil {
 		return Result{}, err
 	}
+	return searchResolvedTopic(ctx, conn, slug, name, opts)
+}
+
+func searchResolvedTopic(ctx context.Context, conn *sql.DB, slug, name string, opts Options) (result Result, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+	if err := topicname.Validate(name); err != nil {
+		return Result{}, err
+	}
 	if opts.Provider == nil {
 		return Result{}, errors.New("topic search provider is required")
 	}
@@ -239,28 +248,29 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 	if err != nil {
 		return Result{}, err
 	}
+	result = Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: runStatusFailed}
+	defer func() {
+		if err != nil {
+			result.Status = runStatusFailed
+			err = errors.Join(err, failRunAndTopic(ctx, conn, topicID, runID, err))
+		}
+	}()
 
 	if opts.Planner != nil {
 		plan, planErr := opts.Planner.Plan(ctx, name)
 		if planErr != nil {
-			if err := failRunAndTopic(ctx, conn, topicID, runID, planErr); err != nil {
-				return Result{}, err
-			}
-			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, planErr
+			return result, planErr
 		}
 		if plan.ValidTopic != nil && !*plan.ValidTopic {
 			invalid := fmt.Errorf("%w: %s", ErrInvalidTopic, sanitizeASCII(truncate(plan.ValidityReason, 240)))
-			if err := failRunAndTopic(ctx, conn, topicID, runID, invalid); err != nil {
-				return Result{}, err
-			}
-			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, invalid
+			return result, invalid
 		}
 		searchRequests = plannedSearchRequests(name, plan, maxPlannedSearches, maxResultsPerPlannedSearch)
 		if len(searchRequests) == 0 {
 			searchRequests = []SearchRequest{{Query: buildQuery(name), MaxResults: searchLimit}}
 		}
 		if err := updateSearchRunQueryAndStage(ctx, conn, runID, summarizeSearchRequests(searchRequests), runStageSearching); err != nil {
-			return Result{}, err
+			return result, err
 		}
 	}
 
@@ -281,14 +291,14 @@ func ProcessNextQueuedTopic(ctx context.Context, conn *sql.DB, opts Options) (Qu
 		return QueueResult{DailyLimitReached: true}, nil
 	}
 
-	var topic string
+	var slug, topic string
 	err = conn.QueryRowContext(ctx, `
-		SELECT name
+		SELECT slug, name
 		FROM topics
 		WHERE status = 'queued'
 		ORDER BY created_at ASC, id ASC
 		LIMIT 1
-	`).Scan(&topic)
+	`).Scan(&slug, &topic)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QueueResult{}, nil
 	}
@@ -296,7 +306,7 @@ func ProcessNextQueuedTopic(ctx context.Context, conn *sql.DB, opts Options) (Qu
 		return QueueResult{}, fmt.Errorf("read next queued topic: %w", err)
 	}
 
-	result, err := SearchTopic(ctx, conn, topic, opts)
+	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts)
 	return QueueResult{Processed: true, Result: result}, err
 }
 
@@ -336,7 +346,7 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 		}
 	}
 
-	result, err := SearchTopic(ctx, conn, topic, opts)
+	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts)
 	return QueueResult{Processed: true, Result: result}, err
 }
 
@@ -636,15 +646,21 @@ func failRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int
 	// A provider deadline/cancellation must not leave the global running slot occupied.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if _, err := conn.ExecContext(ctx, `
+	updated, err := conn.ExecContext(ctx, `
 		UPDATE topic_search_runs
 		SET status = 'failed',
 			stage = '',
 			completed_at = datetime('now'),
 			error = ?
-		WHERE id = ?
-	`, runErr.Error(), runID); err != nil {
+		WHERE id = ? AND status = 'running'
+	`, runErr.Error(), runID)
+	if err != nil {
 		return fmt.Errorf("record topic search failure: %w", err)
+	}
+	if count, err := updated.RowsAffected(); err != nil {
+		return err
+	} else if count == 0 {
+		return nil
 	}
 	available, err := AvailableReadings(ctx, conn, topicID)
 	if err != nil {

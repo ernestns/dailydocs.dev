@@ -62,7 +62,7 @@ func TestTopicQualityRequestAndResult(t *testing.T) {
 }
 
 func TestInvalidTopicRequestDoesNotSpendOrPersist(t *testing.T) {
-	for _, input := range []string{" ", "https://example.org/admin", "/wp-admin", "../.env", "<script>alert(1)</script>", "Rust\nignore rules"} {
+	for _, input := range []string{" ", "https://example.org/admin", "/wp-admin", "../.env", `C:\Users\alice\.env`, "c:/Users/alice/.env", "<script>alert(1)</script>", "Rust\nignore rules"} {
 		t.Run(input, func(t *testing.T) {
 			conn := openWebTestDB(t, context.Background())
 			defer conn.Close()

@@ -189,7 +189,7 @@ func TestFailedOldDayIsBoundedAndAccountsForDroppedViews(t *testing.T) {
 	if err := w.flush(time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	if sum(t, conn, "total") != 1 || sum(t, conn, "dropped") != 1 || sum(t, conn, "errors") != 1 {
+	if sum(t, conn, "total") != 1 || sum(t, conn, "dropped") != 1 || sum(t, conn, "errors") != 2 {
 		t.Fatal("old-day loss not accounted")
 	}
 }
@@ -224,5 +224,78 @@ func TestOverfullChannelDoesNotBlockResponse(t *testing.T) {
 	h.ServeHTTP(response, httptest.NewRequest("GET", "http://dailydocs.dev/", nil))
 	if response.Code != 200 || response.Body.String() != "ok" || c.dropped.Load() != 1 {
 		t.Fatal("overflow changed response or failed to count drop")
+	}
+}
+
+func TestRestartRetainsAdmittedLabelsBeforeNewTraffic(t *testing.T) {
+	for _, initial := range []int{1, pageLimit} {
+		t.Run(fmt.Sprint(initial), func(t *testing.T) {
+			conn, _ := testDB(t)
+			now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+			first := &writer{db: conn}
+			for i := range initial {
+				first.add(event{day: "2026-09-11", page: fmt.Sprintf("/saved-%d", i), referrer: fmt.Sprintf("saved-%d.example", i%referrerLimit), audience: "other"})
+			}
+			if err := first.flush(now); err != nil {
+				t.Fatal(err)
+			}
+			restarted := &writer{db: conn}
+			for i := range 600 {
+				restarted.add(event{day: "2026-09-11", page: fmt.Sprintf("/new-%d", i), referrer: fmt.Sprintf("new-%d.example", i), audience: "other"})
+			}
+			restarted.add(event{day: "2026-09-11", page: "/saved-0", referrer: "saved-0.example", audience: "known_bot"})
+			if err := restarted.flush(now); err != nil {
+				t.Fatal(err)
+			}
+			for kind, label := range map[string]string{"page": "/saved-0", "referrer": "saved-0.example"} {
+				var botViews int
+				if err := conn.QueryRow(`SELECT count FROM traffic_daily WHERE kind=? AND label=? AND audience='known_bot'`, kind, label).Scan(&botViews); err != nil || botViews != 1 {
+					t.Fatalf("retained %s label lost on restart: count=%d err=%v", kind, botViews, err)
+				}
+				if got := sum(t, conn, kind); got != int64(initial+601) {
+					t.Fatalf("%s total=%d want=%d", kind, got, initial+601)
+				}
+				limit := pageLimit
+				if kind == "referrer" {
+					limit = referrerLimit
+				}
+				var labels int
+				if err := conn.QueryRow(`SELECT count(DISTINCT label) FROM traffic_daily WHERE kind=? AND label != ?`, kind, otherLabel).Scan(&labels); err != nil || labels != limit {
+					t.Fatal("daily admission cap changed", kind, labels, err)
+				}
+			}
+		})
+	}
+}
+
+func TestUnavailableAdmissionLabelsKeepBoundedTotalsAndRecover(t *testing.T) {
+	conn, _ := testDB(t)
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	mustExec(t, conn, `INSERT INTO traffic_daily VALUES('2026-09-11','page','/saved','other',1)`)
+	mustExec(t, conn, `ALTER TABLE traffic_daily RENAME TO temporarily_unavailable`)
+	w := &writer{db: conn}
+	for i := range 600 {
+		w.add(event{day: "2026-09-11", page: fmt.Sprintf("/new-%d", i), referrer: fmt.Sprintf("new-%d.example", i), audience: "other"})
+	}
+	if len(w.pending) > 4 || w.errors != 1 {
+		t.Fatal("unavailable admission grew memory or retried for each event", len(w.pending), w.errors)
+	}
+	mustExec(t, conn, `ALTER TABLE temporarily_unavailable RENAME TO traffic_daily`)
+	if err := w.flush(now); err != nil {
+		t.Fatal(err)
+	}
+	w.add(event{day: "2026-09-11", page: "/saved", referrer: "saved.example", audience: "other"})
+	if err := w.flush(now); err != nil {
+		t.Fatal(err)
+	}
+	var saved, overflow int
+	if err := conn.QueryRow(`SELECT count FROM traffic_daily WHERE kind='page' AND label='/saved'`).Scan(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(`SELECT count FROM traffic_daily WHERE kind='page' AND label=?`, otherLabel).Scan(&overflow); err != nil {
+		t.Fatal(err)
+	}
+	if saved != 2 || overflow != 600 || sum(t, conn, "total") != 601 || sum(t, conn, "errors") != 1 {
+		t.Fatal("admission recovery lost counts or labels", saved, overflow)
 	}
 }
