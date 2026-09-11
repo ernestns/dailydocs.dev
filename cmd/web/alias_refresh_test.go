@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/ernestns/daily-docs/internal/topicsearch"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -60,7 +62,7 @@ func TestCLIAliasRefreshPreservesReadingIdentity(t *testing.T) {
 				}
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(raw))), Header: make(http.Header)}, nil
 			})
-			if err := runCommand(context.Background(), []string{"search-topic", "SQLite"}); err != nil {
+			if err := runCommand(context.Background(), []string{"search-topic", "SQLite"}); !errors.Is(err, topicsearch.ErrInsufficientResults) {
 				t.Fatal(err)
 			}
 			conn, err := db.Open(context.Background(), path)
@@ -83,7 +85,7 @@ func TestCLIAliasRefreshPreservesReadingIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			generation = 1
-			if err := runCommand(context.Background(), []string{"search-topic", "SQLite"}); err != nil {
+			if err := runCommand(context.Background(), []string{"search-topic", "SQLite"}); !errors.Is(err, topicsearch.ErrInsufficientResults) {
 				t.Fatal(err)
 			}
 			rows, err := conn.Query("SELECT url FROM pages WHERE active=1 ORDER BY id")

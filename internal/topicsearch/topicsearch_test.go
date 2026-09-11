@@ -78,7 +78,7 @@ func TestSearchTopicDeduplicatesResults(t *testing.T) {
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
 	})
-	if err != nil {
+	if !errors.Is(err, ErrInsufficientResults) {
 		t.Fatalf("search topic: %v", err)
 	}
 
@@ -97,6 +97,7 @@ func TestSearchTopicFiltersLowValueResults(t *testing.T) {
 	defer conn.Close()
 
 	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		MaxResults: 5,
 		Provider: fakeProvider{
 			results: []SearchResult{
 				{Title: "Video", URL: "https://www.youtube.com/watch?v=rust"},
@@ -109,7 +110,7 @@ func TestSearchTopicFiltersLowValueResults(t *testing.T) {
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
 	})
-	if err != nil {
+	if !errors.Is(err, ErrInsufficientResults) {
 		t.Fatalf("search topic: %v", err)
 	}
 
@@ -180,7 +181,7 @@ func TestSearchTopicUsesReviewerToFilterResults(t *testing.T) {
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
 	})
-	if err != nil {
+	if !errors.Is(err, ErrInsufficientResults) {
 		t.Fatalf("search topic: %v", err)
 	}
 
@@ -370,6 +371,7 @@ func TestSearchTopicBatchesReviewerCandidates(t *testing.T) {
 
 	reviewer := &batchReviewer{}
 	_, err := SearchTopic(ctx, conn, "Rust", Options{
+		MaxResults: 5,
 		Provider: fakeProvider{
 			results: []SearchResult{
 				{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
@@ -470,7 +472,7 @@ func TestSearchTopicRateLimitsGlobally(t *testing.T) {
 		Now:         fixedTopicSearchTime,
 		MinInterval: 5 * time.Minute,
 	})
-	if err != nil {
+	if !errors.Is(err, ErrInsufficientResults) {
 		t.Fatalf("first search: %v", err)
 	}
 
@@ -543,7 +545,7 @@ func TestProcessNextQueuedTopicProcessesOldestQueuedTopic(t *testing.T) {
 
 	result, err := ProcessNextQueuedTopic(ctx, conn, Options{
 		Provider: fakeProvider{
-			results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}},
+			results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}},
 		},
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
@@ -582,7 +584,7 @@ func TestProcessQueuedTopicProcessesSpecificQueuedTopic(t *testing.T) {
 
 	result, err := ProcessQueuedTopic(ctx, conn, "rust", Options{
 		Provider: fakeProvider{
-			results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}},
+			results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}},
 		},
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
@@ -617,7 +619,7 @@ func TestProcessQueuedTopicRetriesFailedTopic(t *testing.T) {
 
 	result, err := ProcessQueuedTopic(ctx, conn, "rust", Options{
 		Provider: fakeProvider{
-			results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}},
+			results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}},
 		},
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
@@ -654,7 +656,7 @@ func TestSearchTopicExpiresStaleRunningSearches(t *testing.T) {
 	}
 
 	_, err := SearchTopic(ctx, conn, "Rust", Options{
-		Provider:    fakeProvider{results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}}},
+		Provider:    fakeProvider{results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}}},
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
 	})
@@ -736,7 +738,7 @@ func TestProcessNextQueuedTopicNoopsWithoutQueuedTopic(t *testing.T) {
 	defer conn.Close()
 
 	result, err := ProcessNextQueuedTopic(ctx, conn, Options{
-		Provider:    fakeProvider{results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}}},
+		Provider:    fakeProvider{results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}}},
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
 	})
@@ -766,7 +768,7 @@ func TestProcessNextQueuedTopicStopsAtDailyLimit(t *testing.T) {
 	}
 
 	result, err := ProcessNextQueuedTopic(ctx, conn, Options{
-		Provider:    fakeProvider{results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}}},
+		Provider:    fakeProvider{results: []SearchResult{{Title: "Rust Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}}},
 		Now:         fixedTopicSearchTime,
 		MinInterval: time.Nanosecond,
 		DailyLimit:  2,

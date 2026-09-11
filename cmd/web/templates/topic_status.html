@@ -4,22 +4,29 @@
   {{if or .IsProcessing (eq .Status "queued")}}data-on-interval__duration.2s="@get('/topics/{{.Slug}}/status')"{{end}}
 >
   <p class="status">{{.StatusLabel}}</p>
+  {{if .Message}}<p>{{.Message}}</p>{{end}}
   {{if eq .Status "missing"}}
   <p>Request this topic to find documentation worth reading.</p>
   <form method="post" action="/read">
     <input type="hidden" name="topic" value="{{.Slug}}">
     <button type="submit">Request Topic</button>
   </form>
+  {{else if .InvalidTopic}}
+  <p>The search did not continue for this request.</p>
   {{else if eq .Status "active"}}
-  <p>This topic is ready.</p>
+  {{if ge .AvailableCount 2}}<p>This topic is ready.</p>{{end}}
   <p><a class="button" href="/{{.Slug}}">View reading</a></p>
   {{else if .IsProcessing}}
   <p>This topic is being processed. Results will appear when they are ready.</p>
   {{else if eq .Status "failed"}}
-  <p>This topic could not be processed. DailyDocs can process up to 20 requested topics per day.</p>
+  <p>This attempt did not finish with enough readings. You can keep using the saved links below.</p>
   {{else}}
   <p>This topic is queued. DailyDocs can process up to 20 requested topics per day.</p>
   {{end}}
+  {{if and .Links (ne .Status "active")}}
+  <ul>{{range .Links}}<li><a href="{{.URL}}">{{.Title}}</a></li>{{end}}</ul>
+  {{end}}
+  {{if .InvalidTopic}}<p><a href="/">Try another topic</a></p>{{end}}
   {{if .CanProcess}}
   <form
     method="post"

@@ -64,5 +64,5 @@ type countingWebProvider struct{ calls int }
 
 func (p *countingWebProvider) Search(context.Context, string, int) ([]topicsearch.SearchResult, error) {
 	p.calls++
-	return []topicsearch.SearchResult{{Title: "Generics", URL: "https://doc.rust-lang.org/book/ch10-00-generics.html"}}, nil
+	return []topicsearch.SearchResult{{Title: "Generics", URL: "https://doc.rust-lang.org/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}}, nil
 }

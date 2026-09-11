@@ -1,0 +1,59 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+
+	"github.com/ernestns/daily-docs/internal/topicname"
+	"github.com/ernestns/daily-docs/internal/topicsearch"
+)
+
+type readingLink struct{ Title, URL string }
+
+func addTopicFeedback(ctx context.Context, conn *sql.DB, topicID int64, runStatus string, topic *queuedTopicView) error {
+	count, err := topicsearch.AvailableReadings(ctx, conn, topicID)
+	if err != nil {
+		return err
+	}
+	topic.AvailableCount = count
+	var diagnostic string
+	if err := conn.QueryRowContext(ctx, "SELECT COALESCE((SELECT error FROM topic_search_runs WHERE topic_id=? ORDER BY id DESC LIMIT 1),'')", topicID).Scan(&diagnostic); err != nil {
+		return err
+	}
+	topic.InvalidTopic = strings.HasPrefix(diagnostic, topicname.ErrInvalid.Error()) || topicname.Validate(topic.Name) != nil
+	topic.CanProcess = !topic.IsProcessing && topic.Status != "disabled" && !topic.InvalidTopic && (topic.Status == "queued" || topic.Status == "failed" || count < topicsearch.MinimumUsefulResults || runStatus == "failed")
+	switch {
+	case topic.InvalidTopic:
+		topic.StatusLabel = "Choose a topic"
+		topic.Message = "Enter a specific subject or technology to find documentation. This request was not treated as a valid topic."
+	case topic.IsProcessing:
+		topic.Message = "Finding useful readings. Saved links remain available while this request runs."
+	case topic.Status == "queued":
+		topic.Message = "This request is saved. Use Process topic to try now. Saved requests are not automatically scheduled; the daily limit is 20 topics."
+	case count < topicsearch.MinimumUsefulResults:
+		topic.StatusLabel = "Needs more readings"
+		topic.Message = fmt.Sprintf("Useful distinct readings found: %d. We need at least 2 and aim for 3. Try again to find more; saved links are kept.", count)
+		if runStatus == "failed" && diagnostic != "" && !strings.HasPrefix(diagnostic, topicsearch.ErrInsufficientResults.Error()) {
+			topic.Message += " A source or review service could not finish this attempt."
+		}
+	case runStatus == "failed":
+		topic.Message = "A source or review service could not finish the latest attempt. Your saved readings remain available; you can try again."
+	default:
+		topic.Message = fmt.Sprintf("%d useful distinct readings are available.", count)
+	}
+	rows, err := conn.QueryContext(ctx, "SELECT title,url FROM pages WHERE topic_id=? AND active=1 ORDER BY reading_order LIMIT 3", topicID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var link readingLink
+		if err := rows.Scan(&link.Title, &link.URL); err != nil {
+			return err
+		}
+		topic.Links = append(topic.Links, link)
+	}
+	return rows.Err()
+}

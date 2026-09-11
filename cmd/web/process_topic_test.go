@@ -74,7 +74,7 @@ func TestStaleSearchingTopicPageShowsProcessButton(t *testing.T) {
 		t.Fatalf("expected 200, got %d", response.Code)
 	}
 	body := response.Body.String()
-	for _, expected := range []string{`failed`, `name="topic" value="rust"`, `Process topic`} {
+	for _, expected := range []string{`Needs more readings`, `name="topic" value="rust"`, `Process topic`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in stale searching page:\n%s", expected, body)
 		}
@@ -91,6 +91,7 @@ func TestProcessTopicProcessesRequestedQueuedTopic(t *testing.T) {
 	handler := newTestHandlerWithProvider(conn, webFakeProvider{
 		results: []topicsearch.SearchResult{
 			{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
+			{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"},
 		},
 	})
 	request := httptest.NewRequest(http.MethodPost, "/process-topic", strings.NewReader("topic=rust"))
@@ -116,7 +117,7 @@ func TestProcessTopicProcessesRequestedQueuedTopic(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages").Scan(&pageCount); err != nil {
 		t.Fatalf("count pages: %v", err)
 	}
-	if rustStatus != "active" || aboutStatus != "queued" || pageCount != 1 {
+	if rustStatus != "active" || aboutStatus != "queued" || pageCount != 2 {
 		t.Fatalf("expected only rust active with page, got rust=%q about=%q pages=%d", rustStatus, aboutStatus, pageCount)
 	}
 }
@@ -130,6 +131,7 @@ func TestProcessTopicRetriesFailedTopic(t *testing.T) {
 	handler := newTestHandlerWithProvider(conn, webFakeProvider{
 		results: []topicsearch.SearchResult{
 			{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
+			{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"},
 		},
 	})
 	request := httptest.NewRequest(http.MethodPost, "/process-topic", strings.NewReader("topic=rust"))
@@ -149,7 +151,7 @@ func TestProcessTopicRetriesFailedTopic(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages").Scan(&pageCount); err != nil {
 		t.Fatalf("count pages: %v", err)
 	}
-	if status != "active" || pageCount != 1 {
+	if status != "active" || pageCount != 2 {
 		t.Fatalf("expected retried topic to become active, got status=%q pages=%d", status, pageCount)
 	}
 }
@@ -163,6 +165,7 @@ func TestProcessTopicDatastarRequestReturnsStatusFragment(t *testing.T) {
 	handler := newTestHandlerWithProvider(conn, webFakeProvider{
 		results: []topicsearch.SearchResult{
 			{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
+			{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"},
 		},
 	})
 	request := httptest.NewRequest(http.MethodPost, "/process-topic", strings.NewReader("topic=rust"))
@@ -251,6 +254,7 @@ func (p blockingWebProvider) Search(context.Context, string, int) ([]topicsearch
 	<-p.release
 	return []topicsearch.SearchResult{
 		{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
+		{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"},
 	}, nil
 }
 

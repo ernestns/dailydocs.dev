@@ -170,7 +170,8 @@ func TestGenerateReadingProcessesMissingTopicWhenProviderExists(t *testing.T) {
 
 	handler := newTestHandlerWithProvider(conn, webFakeProvider{
 		results: []topicsearch.SearchResult{
-			{Title: "Rust Book", URL: "https://doc.rust-lang.org/book/"},
+			{Title: "Rust Generics", URL: "https://doc.rust-lang.org/book/ch10-00-generics.html"},
+			{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"},
 		},
 	})
 	response := httptest.NewRecorder()
@@ -193,7 +194,7 @@ func TestGenerateReadingProcessesMissingTopicWhenProviderExists(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages").Scan(&pageCount); err != nil {
 		t.Fatalf("count pages: %v", err)
 	}
-	if topicStatus != "active" || pageCount != 1 {
+	if topicStatus != "active" || pageCount != 2 {
 		t.Fatalf("expected active topic with inline pages, got status=%q pages=%d", topicStatus, pageCount)
 	}
 }
@@ -214,7 +215,7 @@ func TestMissingTopicPageShowsFailedStateWhenProviderFails(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, "failed") {
+	if !strings.Contains(body, "could not finish") {
 		t.Fatalf("expected failed state in body:\n%s", body)
 	}
 }
@@ -228,6 +229,7 @@ func TestMissingTopicPageProcessesRequestedTopicWhenProviderExists(t *testing.T)
 	handler := newTestHandlerWithProvider(conn, webFakeProvider{
 		results: []topicsearch.SearchResult{
 			{Title: "Generics", URL: "https://doc.rust-lang.org/stable/book/ch10-00-generics.html"},
+			{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"},
 		},
 	})
 	request := httptest.NewRequest(http.MethodPost, "/read", strings.NewReader("topic=Rust"))
@@ -254,7 +256,7 @@ func TestMissingTopicPageProcessesRequestedTopicWhenProviderExists(t *testing.T)
 	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pages").Scan(&pageCount); err != nil {
 		t.Fatalf("count pages: %v", err)
 	}
-	if rustStatus != "active" || aboutStatus != "queued" || pageCount != 1 {
+	if rustStatus != "active" || aboutStatus != "queued" || pageCount != 2 {
 		t.Fatalf("expected only rust active with page, got rust=%q about=%q pages=%d", rustStatus, aboutStatus, pageCount)
 	}
 }

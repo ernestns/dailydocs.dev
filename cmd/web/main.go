@@ -17,7 +17,7 @@ import (
 	"github.com/ernestns/daily-docs/internal/topicsearch"
 )
 
-var topicPathPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+var topicPathPattern = regexp.MustCompile(`^[\pL\pN][\pL\pN-]*$`)
 
 const topicProcessingDailyLimit = 20
 
@@ -157,9 +157,8 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 		return true
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-		defer cancel()
-		a.processQueuedTopic(ctx, slug)
+		// SearchTopic starts its bounded deadline after this job acquires the worker.
+		a.processQueuedTopic(context.Background(), slug)
 	}()
 	return true
 }

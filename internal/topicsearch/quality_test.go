@@ -35,7 +35,7 @@ func TestSQLiteQualityReplay(t *testing.T) {
 	ctx := context.Background()
 	conn := openTopicSearchTestDB(t, ctx)
 	defer conn.Close()
-	result, err := SearchTopic(ctx, conn, "SQLite", Options{Provider: fakeProvider{results: fixture.Results}, Reviewer: reviewer, MinInterval: time.Nanosecond})
+	result, err := SearchTopic(ctx, conn, "SQLite", Options{MaxResults: len(fixture.Results), Provider: fakeProvider{results: fixture.Results}, Reviewer: reviewer, MinInterval: time.Nanosecond})
 	if err != nil {
 		t.Fatal(err)
 	}

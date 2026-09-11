@@ -3,6 +3,7 @@ package topicsearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,5 +129,57 @@ func TestOpenAITopicPlannerRequiresAPIKey(t *testing.T) {
 	_, err := OpenAITopicPlanner{}.Plan(context.Background(), "Rust")
 	if err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
 		t.Fatalf("expected api key error, got %v", err)
+	}
+}
+
+// Exercise the real response adapter; invalidity must not be inferred from errors
+// or a missing field in an otherwise usable older response.
+func TestPlannerValidityResponseBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, body     string
+		status         int
+		invalid, fails bool
+	}{
+		{"explicit invalid", `{"valid_topic":false,"validity_reason":"No learning subject","topics":[]}`, 200, true, true},
+		{"plausible unfamiliar", `{"valid_topic":true,"validity_reason":"A named library","topics":[]}`, 200, false, false},
+		{"unknown older response", `{"topics":[]}`, 200, false, false},
+		{"availability failure", "", 503, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req openAIResponsesRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+				}
+				properties := req.Text.Format.Schema["properties"].(map[string]any)
+				if properties["valid_topic"].(map[string]any)["type"] != "boolean" {
+					t.Error("missing validity schema")
+				}
+				if !strings.Contains(req.Input[1].Content, "NewLibrary") {
+					t.Error("topic missing from data message")
+				}
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"output_text": tc.body})
+			}))
+			defer server.Close()
+			conn := openTopicSearchTestDB(t, context.Background())
+			defer conn.Close()
+			provider := &focusedProvider{}
+			_, err := SearchTopic(context.Background(), conn, "NewLibrary", Options{Provider: provider, Planner: OpenAITopicPlanner{APIKey: "test-key", Endpoint: server.URL, Client: server.Client()}})
+			if errors.Is(err, ErrInvalidTopic) != tc.invalid || (tc.fails && err == nil) {
+				t.Fatal(err)
+			}
+			if tc.fails && provider.calls != 0 {
+				t.Fatal("planner failure continued to search", provider.calls)
+			}
+			if !tc.fails && provider.calls != 1 {
+				t.Fatal("eligible empty plan must use one bounded fallback", provider.calls)
+			}
+			for _, limit := range provider.limits {
+				if limit != 3 {
+					t.Fatal("unbounded fallback", limit)
+				}
+			}
+		})
 	}
 }

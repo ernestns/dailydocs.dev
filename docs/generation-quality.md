@@ -1,7 +1,7 @@
 # Generation quality evidence
 
 DailyDocs generates a catalog of reading links, not original articles.
-This change integrates the existing unfinished subtopic planner and adds explicit generation requests, duplicate protection, and honest review status.
+The September 9 change integrated an existing unfinished subtopic planner with explicit generation requests, duplicate protection, and honest review status. The September 11 revision adds bounded early completion, honest shortfalls and partial-result preservation.
 SQLite remains the catalog and shared daily-reading store; no existing data is deleted.
 
 ## Observed baseline, 2026-09-09
@@ -20,7 +20,7 @@ This historical observation is not a controlled benchmark or a claim that nonoff
 ## Bounded planner sample
 
 One local SQLite generation used a disposable database, the existing provider credentials, four focused searches with three results each, and a single candidate-review call.
-It searched only the first four of twenty proposed plan items; production defaults allow twenty searches, so this sample does not establish full-run coverage, latency or cost.
+It searched only the first four of twenty proposed plan items; the production default then allowed twenty searches. The current default is six, so this historical sample does not establish current full-run coverage, latency or cost.
 No live application data or deployment changed.
 
 | Step | Configuration and observed usage |
@@ -68,6 +68,36 @@ Queued topic pages continue refreshing status while another explicitly requested
 Those GET refreshes never start generation; completed pages stop polling and offer the reading link.
 Provider cancellation or timeout records the original failed run using a separate five-second cleanup context, releases the global running restriction, and exposes the existing explicit retry action.
 The generation itself keeps its original deadline.
+
+## September 11 diagnosis and current behavior
+
+A read-only production inspection found 1,472 queued topics, all predating the previous deployment: 1,343 had a historical rate-limited attempt and 129 had never run.
+No scheduled queue worker was found in the application or the inspected host configuration.
+The only completed post-deployment generation was Godot: ten stored links from 54 candidates in about 119 seconds.
+This is evidence of a working production path, not evidence that the newer planner generally fails.
+Historical completed runs included 293 one-link and 195 two-link catalogs; these remain intact.
+
+The current default aims for three distinct useful readings and accepts at least two as a usable catalog.
+Discovery searches at most six focused queries, requesting at most three results each, in groups of three queries followed by review.
+It stops after three useful readings are available, or after the plan/bound is exhausted; default review uses at most two calls.
+An eligible empty plan uses one bounded three-result fallback search.
+No provider is automatically retried and the whole attempt has a 180-second deadline, with separate five-second persistence cleanup contexts.
+The public admission limit remains twenty topics per UTC day; this does not schedule older queued requests.
+
+Zero or one available distinct reading is a failed, retryable shortfall rather than a completed empty catalog.
+Useful pages and their historical assignments are retained; older one-link reading pages offer an explicit retry without generating on GET.
+A later search/review failure preserves earlier valid decisions and records an honestly failed attempt.
+When at least two useful readings survive, the catalog remains active and readable while the latest attempt offers retry.
+No missing decision is promoted, threshold relaxed, duplicate padded, or provider fault classified as an invalid topic.
+
+Syntax checks reject URL/path/control payloads before any topic/run/provider work.
+Short, punctuated, numeric, Unicode and unfamiliar names remain eligible; C++, C# and .NET receive distinct new slugs, while existing named topics keep their legacy slugs and daily assignments.
+The existing planner request includes a narrow validity decision for clear nonsense or instruction payloads, treating uncertainty as eligible.
+This is not a taxonomy or an authoritative factual validator.
+
+Deterministic tests cover 0/1/2/3 results, target/maximum stopping, duplicate-only output, provider responses exceeding requested limits, failed later query/review groups and reviewer batches, cancellation cleanup, invalid input with zero provider calls, planner invalidity versus outage, and preserved legacy IDs/assignments.
+The captured SQLite replay deliberately consumes the full recorded response with explicit fixture options; it is not a simulation of all current default retrieval limits.
+No new live-provider quality evaluation has been performed for this revision at this point.
 
 ## Repeating a bounded evaluation
 

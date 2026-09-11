@@ -52,7 +52,7 @@ func TestCanceledStageFinalizesFailure(t *testing.T) {
 			if topicStatus != "failed" || runStatus != "failed" || runError != err.Error() {
 				t.Fatal("failure state/diagnostic not persisted", topicStatus, runStatus, runError)
 			}
-			_, err = SearchTopic(context.Background(), conn, "Rust", Options{Now: func() time.Time { return fixedTopicSearchTime().Add(time.Minute) }, MinInterval: time.Nanosecond, Provider: fakeProvider{results: []SearchResult{{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}}}})
+			_, err = SearchTopic(context.Background(), conn, "Rust", Options{Now: func() time.Time { return fixedTopicSearchTime().Add(time.Minute) }, MinInterval: time.Nanosecond, Provider: fakeProvider{results: []SearchResult{{Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}, {Title: "Generics", URL: "https://doc.rust-lang.org/book/ch10-00-generics.html"}}}})
 			if err != nil {
 				t.Fatal("failed run still blocks unrelated topic", err)
 			}
@@ -78,7 +78,7 @@ func TestRepeatedSearchPreservesURLIdentity(t *testing.T) {
 			var originalID, originalOrder int64
 			for i, u := range []string{tc.first, tc.second} {
 				_, err := SearchTopic(ctx, conn, "Example", Options{Now: func() time.Time { return fixedTopicSearchTime().Add(time.Duration(i) * time.Minute) }, MinInterval: time.Nanosecond, Provider: fakeProvider{results: []SearchResult{{Title: "Focused guide", URL: u}}}})
-				if err != nil {
+				if (i == 0 || tc.count == 1) && !errors.Is(err, ErrInsufficientResults) || i == 1 && tc.count == 2 && err != nil {
 					t.Fatal(err)
 				}
 				if i == 0 {
@@ -126,7 +126,7 @@ func TestAliasRefreshRetainsHistoricalDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := SearchTopic(ctx, conn, "SQLite", Options{Provider: fakeProvider{results: []SearchResult{{Title: "Plan refreshed", URL: "https://www.sqlite.org/eqp.html"}}}})
-	if err != nil {
+	if !errors.Is(err, ErrInsufficientResults) {
 		t.Fatal(err)
 	}
 	var pages, assigned int

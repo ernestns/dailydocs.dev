@@ -88,6 +88,13 @@
         </p>
         <span class="button">Read</span>
       </a>
+      {{if .Feedback.CanProcess}}
+      <p>{{.Feedback.Message}}</p>
+      <form method="post" action="/process-topic">
+        <input type="hidden" name="topic" value="{{.TopicSlug}}">
+        <button type="submit">Process topic</button>
+      </form>
+      {{end}}
       <a class="home-link" href="/">Home</a>
     </article>
   </main>

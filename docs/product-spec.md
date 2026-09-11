@@ -57,7 +57,7 @@ The URL is the reading.
 
 ### Useful
 
-Each topic should have a small catalog of roughly 10 to 50 useful documentation links. More links are only useful when they improve the daily reading experience.
+Generation targets three useful distinct documentation links. At least two are required for a successful result; zero or one is an explicit, retryable shortfall. Existing useful links remain readable, including older one-link catalogs. More links are only useful when they improve the daily reading experience.
 
 Identifying useful documentation is the central product challenge.
 
@@ -89,7 +89,7 @@ User visits `dailydocs.dev`, searches for a topic, then clicks `View Reading`.
 If the topic exists, DailyDocs shows today's reading.
 
 Submitting the topic form explicitly requests a missing topic and starts processing in the background when allowed by the daily cap.
-Visiting an unknown topic URL only shows a request action and does not create a topic or start generation. A public action can process topics that remain queued or failed.
+Visiting an unknown topic URL only shows a request action and does not create a topic or start generation. A public action can process topics that remain queued, failed, or have fewer than two useful readings. Queued means saved, not automatically scheduled; the application has no background queue pump.
 
 ```text
 Topic
@@ -162,17 +162,20 @@ Missing topics are requested by topic name only. Users are not asked to provide 
 
 When a missing topic is explicitly requested with POST `/read`:
 
-1. Normalize the topic into a slug.
+1. Validate the topic name and resolve its identity, preserving existing names and URLs.
 2. Create or reuse a topic request record.
 3. Start processing in the background when configuration and daily cap allow it.
-4. Show a process action for topics that remain queued or failed.
+4. Show a process action for queued requests, failed attempts, and insufficient catalogs.
 5. Store candidates, available review decisions, and accepted pages.
-6. Display the first available reading once accepted pages exist.
+6. Preserve and display available readings; mark the catalog usable at two distinct readings and aim for three. A later source failure remains visible even when useful earlier readings are available.
 
 Initial processing limit:
 
 - one topic search at a time globally
-- process at most 20 topics per UTC day
+- the public process flow admits at most 20 topics per UTC day
+- a generation attempt runs for at most 180 seconds, excluding its separately bounded persistence cleanup
+- default planned discovery uses at most six searches requesting three results each, reviewed in groups of three searches, with at most two review calls
+- stop at three useful distinct readings or the attempt bound; never lower acceptance criteria to fill a quota
 
 The MVP has no manual activation gate.
 
@@ -195,7 +198,9 @@ Tavily is the preferred search provider.
 
 When OpenAI is configured, DailyDocs first uses a stronger model to turn a broad topic into senior-level retrieval intents, then searches Tavily for documentation pages for those intents. GPT-5 nano reviews candidate metadata against the DailyDocs quality rubric. Every reviewed candidate is stored for observability, while only accepted candidates are stored as pages for the topic rotation.
 
-If model review is unavailable, DailyDocs falls back to deterministic ranking and filtering.
+When OpenAI is not configured, DailyDocs uses one bounded search with deterministic ranking and filtering. A configured planner or reviewer failure does not silently bypass model review. Useful decisions completed before a later provider failure are retained; missing or ambiguous decisions remain unreviewed.
+
+Input hygiene rejects raw URLs, absolute/traversal paths, controls and clear instruction/markup payloads before calling providers. Short or punctuated names such as Go, R, C++, C# and .NET remain valid and distinct. Existing legacy slugs are reused without rewriting daily assignments. The planner can reject a clear non-topic, but unfamiliar or uncertain learning subjects remain eligible; provider errors are availability failures, never proof of invalidity.
 
 Stored search results must include:
 

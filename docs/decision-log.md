@@ -151,6 +151,25 @@ This preserves the simple request flow without accounts or topic-name censorship
 Existing active daily-reading assignments and explicit queued/failed retries remain supported.
 No existing catalog data is deleted by this change.
 
+### Bound Generation And Preserve Useful Shortfalls
+
+Decision: target three distinct useful readings, with two required for a successful generation result.
+Zero or one is a visible retryable shortfall, including legacy one-link catalogs; existing useful pages and historical assignments remain intact.
+Default discovery uses at most six focused searches of three results, in groups of three with review, and stops at the target or a 180-second deadline.
+A later source failure preserves already reviewed useful output and records the failed attempt without bypassing review.
+No scheduler, migration of generation states, bulk backfill or data deletion is introduced.
+
+Reason: old queue history was mistaken for current processing, and the former one-link completion rule concealed insufficient catalogs.
+Production evidence also contains a successful post-deployment Godot run, so this correction does not assume the planner generally fails.
+
+Implications:
+
+- Reject clear syntax abuse before provider work, preserving legitimate short, punctuated and unfamiliar subjects.
+- Add a narrow validity decision to the existing planner; uncertain subjects remain eligible and provider availability errors remain retryable failures.
+- Keep legacy named-topic URLs and historical reading references; distinguish new C++, C# and .NET identities.
+- Queued means saved for an explicit processing request, not an automatically scheduled job.
+- Preserve the existing public daily cap and GET generation boundary.
+
 ### Deprioritize Scheduled Backups
 
 Decision: keep manual backup and restore scripts, but move scheduled offsite backups to the backlog.

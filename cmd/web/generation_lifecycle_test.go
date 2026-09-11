@@ -29,7 +29,7 @@ func (p *waitingWebProvider) Search(ctx context.Context, _ string, _ int) ([]top
 			return nil, ctx.Err()
 		}
 	}
-	return []topicsearch.SearchResult{{Title: "Generics", URL: "https://doc.rust-lang.org/book/ch10-00-generics.html"}}, nil
+	return []topicsearch.SearchResult{{Title: "Generics", URL: "https://doc.rust-lang.org/book/ch10-00-generics.html"}, {Title: "Ownership", URL: "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"}}, nil
 }
 
 func topicRequest(method, path, topic string) *http.Request {

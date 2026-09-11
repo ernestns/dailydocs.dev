@@ -9,14 +9,17 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ernestns/daily-docs/internal/topicname"
 )
 
 const (
-	DefaultMaxResults              = 10
+	DefaultMaxResults              = 3
+	MinimumUsefulResults           = 2
 	DefaultMinInterval             = 5 * time.Minute
 	DefaultMinScore                = 65
 	DefaultDailyLimit              = 20
-	DefaultMaxPlannedSearches      = 20
+	DefaultMaxPlannedSearches      = 6
 	DefaultPlannedSearchResultSize = 3
 	DefaultReviewBatchSize         = 20
 	StaleRunTimeout                = 30 * time.Minute
@@ -33,8 +36,10 @@ const (
 )
 
 var (
-	ErrRateLimited = errors.New("topic search rate limited")
-	ErrNoResults   = errors.New("topic search returned no usable results")
+	ErrRateLimited         = errors.New("topic search rate limited")
+	ErrInsufficientResults = errors.New("not enough useful distinct readings")
+	ErrNoResults           = ErrInsufficientResults
+	ErrInvalidTopic        = topicname.ErrInvalid
 )
 
 type Provider interface {
@@ -76,11 +81,13 @@ type PlannedTopic struct {
 }
 
 type PlanOutput struct {
-	Topics       []PlannedTopic
-	Model        string
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
+	ValidTopic     *bool
+	ValidityReason string
+	Topics         []PlannedTopic
+	Model          string
+	InputTokens    int
+	OutputTokens   int
+	TotalTokens    int
 }
 
 type ReviewCandidate struct {
@@ -154,15 +161,16 @@ type storedResult struct {
 }
 
 func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) (Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+	slug, name, err := ResolveTopic(ctx, conn, topic)
+	if err != nil {
+		return Result{}, err
+	}
 	if opts.Provider == nil {
 		return Result{}, errors.New("topic search provider is required")
 	}
 
-	slug := slugFromTopicName(topic)
-	if slug == "" {
-		return Result{}, fmt.Errorf("invalid topic %q", topic)
-	}
-	name := displayTopicName(topic, slug)
 	now := currentTime(opts.Now)
 	maxResults := opts.MaxResults
 	if maxResults < 1 {
@@ -240,6 +248,13 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 			}
 			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, planErr
 		}
+		if plan.ValidTopic != nil && !*plan.ValidTopic {
+			invalid := fmt.Errorf("%w: %s", ErrInvalidTopic, sanitizeASCII(truncate(plan.ValidityReason, 240)))
+			if err := failRunAndTopic(ctx, conn, topicID, runID, invalid); err != nil {
+				return Result{}, err
+			}
+			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, invalid
+		}
 		searchRequests = plannedSearchRequests(name, plan, maxPlannedSearches, maxResultsPerPlannedSearch)
 		if len(searchRequests) == 0 {
 			searchRequests = []SearchRequest{{Query: buildQuery(name), MaxResults: searchLimit}}
@@ -249,80 +264,7 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 		}
 	}
 
-	providerResults, searchErr := executeSearchRequests(ctx, opts.Provider, searchRequests)
-	if searchErr != nil {
-		if err := failRunAndTopic(ctx, conn, topicID, runID, searchErr); err != nil {
-			return Result{}, err
-		}
-		return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, searchErr
-	}
-
-	normalized := normalizeResults(providerResults)
-	if len(normalized) == 0 {
-		if err := failRunAndTopic(ctx, conn, topicID, runID, ErrNoResults); err != nil {
-			return Result{}, err
-		}
-		return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, ErrNoResults
-	}
-	if err := storeSearchCandidates(ctx, conn, topicID, runID, normalized); err != nil {
-		if err := failRunAndTopic(ctx, conn, topicID, runID, err); err != nil {
-			return Result{}, err
-		}
-		return Result{}, err
-	}
-
-	var reviewOutput ReviewOutput
-	if opts.Reviewer != nil {
-		if err := updateSearchRunStage(ctx, conn, runID, runStageReviewing); err != nil {
-			return Result{}, err
-		}
-		normalized, reviewOutput, err = reviewResults(ctx, name, opts.Reviewer, normalized, minScore, reviewBatchSize)
-		if err != nil {
-			if err := failRunAndTopic(ctx, conn, topicID, runID, err); err != nil {
-				return Result{}, err
-			}
-			return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed"}, err
-		}
-	}
-	if len(normalized) > maxResults {
-		normalized = capAcceptedResults(normalized, maxResults)
-	}
-	acceptedCount := countAccepted(normalized)
-	for i := range normalized {
-		normalized[i].Rank = i + 1
-	}
-
-	if err := updateSearchRunStage(ctx, conn, runID, runStageStoring); err != nil {
-		return Result{}, err
-	}
-	storedCount, err := storeReviewedResults(ctx, conn, topicID, runID, normalized)
-	if err != nil {
-		if err := failRunAndTopic(ctx, conn, topicID, runID, err); err != nil {
-			return Result{}, err
-		}
-		return Result{}, err
-	}
-
-	if acceptedCount == 0 {
-		if err := failRunAndTopic(ctx, conn, topicID, runID, ErrNoResults); err != nil {
-			return Result{}, err
-		}
-		return Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: "failed", ResultCount: len(providerResults)}, ErrNoResults
-	}
-
-	if err := completeRunAndTopic(ctx, conn, topicID, runID, len(providerResults), storedCount, reviewOutput); err != nil {
-		return Result{}, err
-	}
-
-	return Result{
-		TopicID:     topicID,
-		TopicSlug:   slug,
-		TopicName:   name,
-		RunID:       runID,
-		Status:      "completed",
-		ResultCount: len(providerResults),
-		StoredCount: storedCount,
-	}, nil
+	return discoverReadings(ctx, conn, topicID, runID, slug, name, searchRequests, opts, maxResults, minScore, reviewBatchSize)
 }
 
 func ProcessNextQueuedTopic(ctx context.Context, conn *sql.DB, opts Options) (QueueResult, error) {
@@ -372,18 +314,26 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 		return QueueResult{DailyLimitReached: true}, nil
 	}
 
-	var topic string
+	var topic, status, latestRun string
+	var topicID int64
 	err = conn.QueryRowContext(ctx, `
-		SELECT name
-		FROM topics
-		WHERE slug = ?
-			AND status IN ('queued', 'failed')
-	`, slug).Scan(&topic)
+        SELECT id,name,status,COALESCE((SELECT status FROM topic_search_runs WHERE topic_id=topics.id ORDER BY id DESC LIMIT 1),'')
+        FROM topics WHERE slug=? AND status IN ('queued','failed','active')
+    `, slug).Scan(&topicID, &topic, &status, &latestRun)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QueueResult{}, nil
 	}
 	if err != nil {
 		return QueueResult{}, fmt.Errorf("read queued topic %q: %w", slug, err)
+	}
+	if status == "active" && latestRun != "failed" {
+		available, err := AvailableReadings(ctx, conn, topicID)
+		if err != nil {
+			return QueueResult{}, err
+		}
+		if available >= MinimumUsefulResults {
+			return QueueResult{}, nil
+		}
 	}
 
 	result, err := SearchTopic(ctx, conn, topic, opts)
@@ -472,7 +422,10 @@ func executeSearchRequests(ctx context.Context, provider Provider, requests []Se
 			searchResults, err = provider.Search(ctx, query, limit)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("search query %q: %w", query, err)
+			return results, fmt.Errorf("search query %q: %w", query, err)
+		}
+		if len(searchResults) > limit {
+			searchResults = searchResults[:limit]
 		}
 		results = append(results, searchResults...)
 	}
@@ -693,40 +646,18 @@ func failRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int
 	`, runErr.Error(), runID); err != nil {
 		return fmt.Errorf("record topic search failure: %w", err)
 	}
+	available, err := AvailableReadings(ctx, conn, topicID)
+	if err != nil {
+		return err
+	}
+	status := "failed"
+	if available >= MinimumUsefulResults {
+		status = "active"
+	}
 	if _, err := conn.ExecContext(ctx, `
-		UPDATE topics
-		SET status = 'failed',
-			updated_at = datetime('now')
-		WHERE id = ?
-	`, topicID); err != nil {
+        UPDATE topics SET status=?, updated_at=datetime('now') WHERE id=?
+    `, status, topicID); err != nil {
 		return fmt.Errorf("record failed topic status: %w", err)
-	}
-	return nil
-}
-
-func completeRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int64, resultCount int, storedCount int, review ReviewOutput) error {
-	if _, err := conn.ExecContext(ctx, `
-		UPDATE topic_search_runs
-		SET status = 'completed',
-			stage = '',
-			completed_at = datetime('now'),
-			result_count = ?,
-			stored_count = ?,
-			reviewer_model = ?,
-			reviewer_input_tokens = ?,
-			reviewer_output_tokens = ?,
-			reviewer_total_tokens = ?
-		WHERE id = ?
-	`, resultCount, storedCount, review.Model, review.InputTokens, review.OutputTokens, review.TotalTokens, runID); err != nil {
-		return fmt.Errorf("record topic search completion: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, `
-		UPDATE topics
-		SET status = 'active',
-			updated_at = datetime('now')
-		WHERE id = ?
-	`, topicID); err != nil {
-		return fmt.Errorf("record active topic status: %w", err)
 	}
 	return nil
 }
@@ -1031,17 +962,12 @@ func reviewResults(ctx context.Context, topic string, reviewer Reviewer, results
 			end = len(results)
 		}
 		batchReviewed, batchOutput, err := reviewResultBatch(ctx, topic, reviewer, results[start:end], minScore)
-		if err != nil {
-			return nil, ReviewOutput{}, err
-		}
 		reviewed = append(reviewed, batchReviewed...)
-		combined.InputTokens += batchOutput.InputTokens
-		combined.OutputTokens += batchOutput.OutputTokens
-		combined.TotalTokens += batchOutput.TotalTokens
-		if combined.Model == "" {
-			combined.Model = batchOutput.Model
-		} else if batchOutput.Model != "" && combined.Model != batchOutput.Model {
-			combined.Model = "multiple"
+		mergeReviewUsage(&combined, batchOutput)
+		if err != nil {
+			reviewed = append(reviewed, unreviewedResults(results[end:])...)
+			sortReviewedResults(reviewed)
+			return reviewed, combined, err
 		}
 	}
 	sortReviewedResults(reviewed)
@@ -1066,7 +992,7 @@ func reviewResultBatch(ctx context.Context, topic string, reviewer Reviewer, res
 
 	reviewOutput, err := reviewer.Review(ctx, topic, candidates)
 	if err != nil {
-		return nil, ReviewOutput{}, fmt.Errorf("review topic search results: %w", err)
+		return unreviewedResults(results), ReviewOutput{}, fmt.Errorf("review topic search results: %w", err)
 	}
 
 	// Keep omitted candidates visible as unreviewed, without inventing a rejection.
@@ -1082,7 +1008,7 @@ func reviewResultBatch(ctx context.Context, topic string, reviewer Reviewer, res
 	for _, review := range reviewOutput.Results {
 		resultIndex, ok := byIndex[review.Index]
 		if !ok || seen[review.Index] {
-			return nil, ReviewOutput{}, fmt.Errorf("review returned invalid or duplicate candidate index %d", review.Index)
+			return unreviewedResults(results), reviewOutput, fmt.Errorf("review returned invalid or duplicate candidate index %d", review.Index)
 		}
 		seen[review.Index] = true
 		result := results[resultIndex]
@@ -1110,16 +1036,6 @@ func sortReviewedResults(reviewed []storedResult) {
 		}
 		return reviewed[i].Rank < reviewed[j].Rank
 	})
-}
-
-func countAccepted(results []storedResult) int {
-	count := 0
-	for _, result := range results {
-		if result.Accepted {
-			count++
-		}
-	}
-	return count
 }
 
 func capAcceptedResults(results []storedResult, maxAccepted int) []storedResult {
@@ -1310,41 +1226,9 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04:05")
 }
 
-func slugFromTopicName(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var builder strings.Builder
-	previousDash := false
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			builder.WriteRune(r)
-			previousDash = false
-		case r >= '0' && r <= '9':
-			builder.WriteRune(r)
-			previousDash = false
-		default:
-			if builder.Len() > 0 && !previousDash {
-				builder.WriteByte('-')
-				previousDash = true
-			}
-		}
-	}
-	return strings.Trim(builder.String(), "-")
-}
-
 func displayTopicName(value string, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
+	if strings.TrimSpace(value) == "" {
 		value = fallback
 	}
-	parts := strings.FieldsFunc(value, func(r rune) bool {
-		return r == '-' || r == '_'
-	})
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-	return strings.Join(parts, " ")
+	return topicname.Display(value)
 }
