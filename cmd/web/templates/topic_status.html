@@ -8,7 +8,7 @@
   {{if eq .Status "missing"}}
   <p>Request this topic to find documentation worth reading.</p>
   <form method="post" action="/read">
-    <input type="hidden" name="topic" value="{{.Slug}}">
+    <input type="hidden" name="topic" value="{{.Name}}">
     <button type="submit">Request Topic</button>
   </form>
   {{else if .InvalidTopic}}

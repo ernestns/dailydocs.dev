@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -79,10 +80,27 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic string) {
 	queued, err := a.loadTopicStatus(r.Context(), topic)
 	if errors.Is(err, sql.ErrNoRows) {
+		name := displayTopicName(topic, topic)
+		if r.URL.Query().Has("topic") {
+			name = strings.TrimSpace(r.URL.Query().Get("topic"))
+			slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, name)
+			if errors.Is(err, topicname.ErrInvalid) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if slug != topic {
+				http.Error(w, "topic name does not match this URL", http.StatusBadRequest)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		renderTemplate(w, queuedTopicTemplate, queuedTopicView{
-			Slug: topic, Name: displayTopicName(topic, topic), Status: "missing",
+			Slug: topic, Name: name, Status: "missing",
 			StatusLabel: "Not requested yet",
 		})
 		return
@@ -225,7 +243,16 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
+	var exists bool
+	if err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=?)", slug).Scan(&exists); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	location := "/" + slug
+	if !exists {
+		location += "?" + url.Values{"topic": {topic}}.Encode()
+	}
+	http.Redirect(w, r, location, http.StatusSeeOther)
 }
 
 func (a app) topicStatusHandler(w http.ResponseWriter, r *http.Request, slug string) {
