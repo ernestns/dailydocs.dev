@@ -80,7 +80,7 @@ Implications:
 - Missing-topic search should offer a topic request.
 - The request is visible as queued.
 - An explicit POST request starts processing asynchronously when allowed; ordinary URL visits do not request topics.
-- A public process action handles topics that remain queued or failed.
+- Public processing and retry rules are owned by [Topic Creation](product-spec.md#topic-creation).
 - Evaluated search results are stored, and accepted results become active pages.
 - There is no manual activation gate in the MVP.
 - Existing documentation URL submission, source, candidate, and admin activation paths are retired.
@@ -108,7 +108,7 @@ Implications:
 - Store reviewer score, page type, reason, and accepted/rejected decision when available.
 - Expose requested topics and evaluated candidates publicly for observability.
 - Fall back to deterministic ranking when `OPENAI_API_KEY` is not configured.
-- AI summaries, quizzes, tagging, and quality review are future features, not MVP requirements.
+- AI summaries, quizzes, and tagging are future features, not MVP requirements.
 
 ### Plan Topic Searches Before Retrieval
 
@@ -124,7 +124,7 @@ Implications:
 
 ### Process Topic Requests Asynchronously
 
-Decision: the MVP starts processing a newly requested topic asynchronously and exposes a public process action for topics that remain queued or failed.
+Decision: process explicit topic requests asynchronously and expose a public retry action under the [Topic Creation contract](product-spec.md#topic-creation).
 
 Reason: processing can take several seconds. Returning a status page immediately gives a better user experience while still keeping the implementation in the web process. The manual action keeps recoverable topics visible. A daily cap directly controls cost and abuse.
 
@@ -132,12 +132,7 @@ Implications:
 
 - Explicit POST topic requests enqueue, then start Tavily/OpenAI processing in the background.
 - The process action also starts background Tavily/OpenAI processing.
-- Process at most 20 topics per UTC day.
-- If the daily cap has been reached, keep remaining topics queued.
-- The UI shows queued/searching/reviewing/storing/failed/active status and updates the status panel with Datastar.
-- Queued status panels continue read-only refreshes while another generation holds the worker; completion stops polling.
-- Failed topics can be retried manually.
-- Cancellation and provider deadlines persist failure using a separate bounded cleanup context so the failed job releases the global running restriction.
+- Admission limits, waiting/running status, retry eligibility, and cancellation cleanup are specified in [Topic Creation](product-spec.md#topic-creation).
 - Per-user rate limiting can wait until there is evidence the daily cap is insufficient.
 
 ### Require An Explicit Topic Generation Request
@@ -148,27 +143,15 @@ Dated unknown URLs return not found.
 
 Reason: the public catalog accumulated scanner-like URL paths because arbitrary GET requests created topics and spent the shared daily processing budget.
 This preserves the simple request flow without accounts or topic-name censorship.
-Existing active daily-reading assignments and explicit queued/failed retries remain supported.
+Existing active daily-reading assignments remain supported; [Topic Creation](product-spec.md#topic-creation) owns explicit retry behavior.
 No existing catalog data is deleted by this change.
 
 ### Bound Generation And Preserve Useful Shortfalls
 
-Decision: target three distinct useful readings, with two required for a successful generation result.
-Zero or one is a visible retryable shortfall, including legacy one-link catalogs; existing useful pages and historical assignments remain intact.
-Default discovery uses at most six focused searches of three results, in groups of three with review, and stops at the target or a 180-second deadline.
-A later source failure preserves already reviewed useful output and records the failed attempt without bypassing review.
-No scheduler, migration of generation states, bulk backfill or data deletion is introduced.
+Decision: bound discovery, expose recoverable shortfalls, and preserve useful output. [Topic Creation](product-spec.md#topic-creation) owns result targets, budgets, identity, and retry rules; [Search Pipeline](product-spec.md#search-pipeline) owns input eligibility and provider-failure behavior.
 
 Reason: old queue history was mistaken for current processing, and the former one-link completion rule concealed insufficient catalogs.
-Production evidence also contains a successful post-deployment Godot run, so this correction does not assume the planner generally fails.
-
-Implications:
-
-- Reject clear syntax abuse before provider work, preserving legitimate short, punctuated and unfamiliar subjects.
-- Add a narrow validity decision to the existing planner; uncertain subjects remain eligible and provider availability errors remain retryable failures.
-- Keep legacy named-topic URLs and historical reading references; distinguish new C++, C# and .NET identities.
-- Queued means saved for an explicit processing request, not an automatically scheduled job.
-- Preserve the existing public daily cap and GET generation boundary.
+The [production evidence](generation-quality.md#september-11-diagnosis) distinguishes historical queue state from the behavior of actual post-deployment generation.
 
 ### Deprioritize Scheduled Backups
 

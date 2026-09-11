@@ -86,10 +86,10 @@ Official documentation is a strong positive signal, but it is not the only signa
 
 User visits `dailydocs.dev`, searches for a topic, then clicks `View Reading`.
 
-If the topic exists, DailyDocs shows today's reading.
+If the topic has an active catalog, DailyDocs shows today's reading.
 
 Submitting the topic form explicitly requests a missing topic and starts processing in the background when allowed by the daily cap.
-Visiting an unknown topic URL only shows a request action and does not create a topic or start generation. A public action can process topics that remain queued, failed, or have fewer than two useful readings. Queued means saved, not automatically scheduled; the application has no background queue pump.
+Visiting an unknown topic URL only shows a request action and does not create a topic or start generation. See [Topic Creation](#topic-creation) for processing, waiting, and retry behavior.
 
 ```text
 Topic
@@ -160,6 +160,8 @@ The topic-only URL creates today's assignment when it is viewed and no assignmen
 
 Missing topics are requested by topic name only. Users are not asked to provide a documentation URL.
 
+Typed names are resolved before looking up an existing active catalog. A historical C++ catalog at `/c` cannot capture typed C, nor can .NET at `/net` capture typed NET. Matching existing names and direct historical URLs retain their identities and daily assignments. Viewing an existing named active catalog, including a legacy one-link catalog, remains a lookup; use **Process topic** to request a retry.
+
 When a missing topic is explicitly requested with POST `/read`:
 
 1. Validate the topic name and resolve its identity, preserving existing names and URLs.
@@ -169,13 +171,21 @@ When a missing topic is explicitly requested with POST `/read`:
 5. Store candidates, available review decisions, and accepted pages.
 6. Preserve and display available readings; mark the catalog usable at two distinct readings and aim for three. A later source failure remains visible even when useful earlier readings are available.
 
-Initial processing limit:
+**Process topic** is available for eligible queued or failed topics, catalogs below the useful-reading minimum, and active catalogs whose latest attempt failed. A failed attempt can coexist with an active catalog when enough useful readings survive; it still offers an explicit retry.
+
+Queued means saved, not automatically scheduled; the application has no background queue pump. Only explicitly submitted asynchronous work is tracked in memory per topic, suppressing duplicate pending jobs. While waiting for the single worker, its status panel says **Waiting for worker** without changing the stored topic/run status. Redirected pages, saved reading pages, and status GETs continue polling pending or running work and stop when it finishes. These GETs do not create topics, enqueue jobs, or call providers.
+
+Default processing limits for the public and CLI generation paths:
 
 - one topic search at a time globally
 - the public process flow admits at most 20 topics per UTC day
-- a generation attempt runs for at most 180 seconds, excluding its separately bounded persistence cleanup
-- default planned discovery uses at most six searches requesting three results each, reviewed in groups of three searches, with at most two review calls
+- a generation attempt runs for at most 180 seconds after acquiring the worker, with separate five-second persistence cleanup contexts
+- one planner call when configured; planned discovery uses at most six searches requesting and retaining at most three results each, reviewed in groups of three searches, with at most two review calls
+- an eligible empty plan uses one fallback search of at most three results
 - stop at three useful distinct readings or the attempt bound; never lower acceptance criteria to fill a quota
+- no automatic provider retry, historical queue backfill, or catalog regeneration
+
+Explicit internal test/evaluation options can override retrieval and review batch sizes; they do not change these defaults.
 
 The MVP has no manual activation gate.
 
@@ -196,11 +206,11 @@ Topic
 
 Tavily is the preferred search provider.
 
-When OpenAI is configured, DailyDocs first uses a stronger model to turn a broad topic into senior-level retrieval intents, then searches Tavily for documentation pages for those intents. GPT-5 nano reviews candidate metadata against the DailyDocs quality rubric. Every reviewed candidate is stored for observability, while only accepted candidates are stored as pages for the topic rotation.
+When OpenAI is configured, DailyDocs first uses a stronger model to turn a broad topic into senior-level retrieval intents, then searches Tavily for documentation pages for those intents. Planner output is a retrieval plan, not accepted page data; Tavily supplies the URLs. GPT-5 nano reviews candidate metadata against the DailyDocs quality rubric. Every reviewed candidate is stored for observability, while only accepted candidates are stored as pages for the topic rotation.
 
-When OpenAI is not configured, DailyDocs uses one bounded search with deterministic ranking and filtering. A configured planner or reviewer failure does not silently bypass model review. Useful decisions completed before a later provider failure are retained; missing or ambiguous decisions remain unreviewed.
+When OpenAI is not configured, DailyDocs uses one bounded search with deterministic ranking and filtering. A configured planner or reviewer failure does not silently bypass model review. Useful decisions completed before a later provider failure are retained; [generation-quality.md](generation-quality.md#corrections-and-deterministic-replay) owns URL equivalence and review-decision identity rules.
 
-Input hygiene rejects raw URLs, absolute/traversal paths, controls and clear instruction/markup payloads before calling providers. Short or punctuated names such as Go, R, C++, C# and .NET remain valid and distinct. Existing legacy slugs are reused without rewriting daily assignments. The planner can reject a clear non-topic, but unfamiliar or uncertain learning subjects remain eligible; provider errors are availability failures, never proof of invalidity.
+Input hygiene rejects raw URLs, absolute/traversal paths, controls and clear instruction/markup payloads before topic, run, or provider work. Short, punctuated, numeric, Unicode, and named/scoped subjects remain eligible, including Go, R, C++, C#, .NET, `@scope/library`, `HTML div element`, `SQL SELECT`, `CSS @media`, and `Git ../ pathspec`. Topic identity follows [Topic Creation](#topic-creation). The planner can reject a clear non-topic, but unfamiliar or uncertain learning subjects remain eligible; provider errors are availability failures, never proof of invalidity.
 
 Stored search results must include:
 
@@ -216,7 +226,7 @@ Stored search results must include:
 - accepted decision
 - date stored
 
-If the search provider is unavailable or returns no usable results, the topic remains visible as enqueued or failed rather than silently disappearing.
+If search is not configured, the topic stays queued. A provider failure or insufficient result remains visible with saved links and the retry state described in [Topic Creation](#topic-creation).
 
 ### Public Observability
 
@@ -233,9 +243,11 @@ DailyDocs publicly shows:
 
 ### Search Topics
 
-Autocomplete is supported for existing topics.
+Autocomplete is supported for existing topics, with exact matches based on the topic name rather than a potentially colliding legacy slug.
 
 If a topic does not exist, the UI should clearly offer to request the topic.
+
+The topic-generation form disables submission for empty or whitespace-only input immediately, including keyboard submission, typing/clearing, and browser-restored values. Server validation remains required. This restriction does not apply to the catalog filter form.
 
 ### View Reading
 
@@ -259,9 +271,10 @@ Users should be able to tell that a missing topic has been enqueued.
 
 A topic request should not require an account.
 
-The topic catalog shows 50 topics per page, ordered by name with a stable ID tie-breaker.
-Name/slug search and status filters compose with pagination; clearing filters returns to the full catalog.
-The catalog includes topics without readings and distinguishes active reading counts from accepted candidate counts.
+The `/topics` catalog retrieves at most 50 topics per page in SQL, ordered by name using SQLite `NOCASE` collation with a stable ID tie-breaker. It shows the matching total and the displayed row range.
+Name/slug substring search (`q`) and stored-status filters (`status=active`, `queued`, `searching`, or `failed`) compose with `page` pagination. Accessible previous/next links retain both filters. Submitting empty filters remains usable and returns to the full catalog.
+Page numbers must be positive integers; invalid page or status values return a bad request. A page beyond the matching range displays the last page, while an empty catalog or unmatched filter has an explicit empty state.
+The catalog includes topics without readings and distinguishes distinct active reading destinations from accepted candidate rows and all discovered candidates. It excludes disabled topics.
 Stored active catalogs with fewer than two readings are labeled as needing more readings; queued topics without readings are shown as not generated.
 
 ## Link Validation
@@ -291,7 +304,7 @@ Responsibilities:
 - rendering
 - link validation command mode
 
-Application startup automatically performs database migrations.
+Web startup automatically performs database migrations. Private traffic collection and the separate read-only reporting command are described in [traffic.md](traffic.md).
 
 ## Data Model
 

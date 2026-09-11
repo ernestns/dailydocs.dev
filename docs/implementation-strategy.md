@@ -32,10 +32,7 @@ Avoid adding broad layers until there is a concrete need. New behavior should li
 
 ## Next Work
 
-1. Test Tavily searches with real topics locally.
-2. Deploy topic search to production.
-3. Observe real search results and adjust query wording if needed.
-4. Decide whether search-only quality is sufficient before adding feedback or review.
+The deployed discovery baseline, measured results, and opt-in evaluation procedure are recorded in [generation-quality.md](generation-quality.md). Use that evidence when choosing further quality work; planned features remain in the [Backlog](#backlog).
 
 ## Core Domain
 
@@ -84,17 +81,7 @@ POST /read (topic form)
   -> redirect to reading or status state
 ```
 
-The UI should make it clear when the request remains queued, is processing, has failed, or is ready. A process action is available for queued and failed topics.
-
-Processing flow:
-
-```text
-POST /read or POST /process-topic
-  -> start processing the requested queued or failed topic in the background
-  -> stop if 20 topics have been processed today
-  -> run search pipeline
-  -> mark active or failed
-```
+The [Topic Creation contract](product-spec.md#topic-creation) owns retry eligibility, typed-name identity, pending-work polling, and the distinction between catalog status and the latest attempt.
 
 ## Search Pipeline
 
@@ -126,31 +113,15 @@ OpenAI topic planning uses a stronger model by default, configured with `OPENAI_
 
 All candidates are stored in `topic_search_results`.
 Only accepted candidates become active `pages`.
-Candidates omitted by the reviewer retain a NULL score and are displayed as Not reviewed, while valid reviewed candidates remain usable.
-Duplicate or unknown reviewer indices fail review instead of publishing ambiguous decisions.
-See [generation-quality.md](generation-quality.md) for the measured baseline, URL identity rules, and bounded evaluation procedure.
+See [generation-quality.md](generation-quality.md#corrections-and-deterministic-replay) for authoritative URL/review identity rules and partial-decision handling.
 
 ## Search Limits
 
-Initial processing limits:
-
-- one topic search at a time globally
-- process at most 20 topics per UTC day
-- bounded provider timeout
-- bounded provider result count
-
-If `TAVILY_API_KEY` is missing, topics remain queued.
+The [Topic Creation contract](product-spec.md#topic-creation) owns discovery budgets, admission limits, shortfalls, and retry behavior; [Search Pipeline](product-spec.md#search-pipeline) describes behavior when providers are unavailable or unconfigured.
 
 ## Data Model
 
-Current tables:
-
-- `topics`
-- `pages`
-- `daily_readings`
-- `imports`
-- `topic_search_runs`
-- `topic_search_results`
+The [SQLite migrations](../internal/db/migrations/) own the schema. See [traffic.md](traffic.md#storage-and-failure-behavior) for aggregate storage and reporting constraints.
 
 `topics.status` values:
 
@@ -211,6 +182,8 @@ Current topic-search command:
 ```sh
 dailydocs search-topic rust
 ```
+
+For the private reporting command and SSH recipe, see [traffic.md](traffic.md#view-the-report).
 
 ## Deployment
 

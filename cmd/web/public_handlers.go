@@ -587,8 +587,6 @@ func isDatastarRequest(r *http.Request) bool {
 	return r.Header.Get("Datastar-Request") != ""
 }
 
-func slugFromTopicName(value string) string { return topicname.Slug(value) }
-
 func displayTopicName(value string, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		value = fallback

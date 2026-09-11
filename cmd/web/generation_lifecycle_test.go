@@ -43,7 +43,7 @@ func TestExplicitQueuedRequestKeepsPolling(t *testing.T) {
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
 	p := &waitingWebProvider{started: make(chan struct{}), release: make(chan struct{})}
-	a := app{db: conn, now: time.Now, searchMu: &sync.Mutex{}, searchProvider: p, asyncProcessing: true}
+	a := app{db: conn, now: time.Now, searchMu: &sync.Mutex{}, pendingSearches: &sync.Map{}, searchProvider: p, asyncProcessing: true}
 	var release sync.Once
 	defer release.Do(func() { close(p.release) })
 	first := httptest.NewRecorder()
@@ -63,7 +63,7 @@ func TestExplicitQueuedRequestKeepsPolling(t *testing.T) {
 	}
 	waiting := httptest.NewRecorder()
 	a.routeHandler(waiting, topicRequest(http.MethodGet, second.Header().Get("Location"), ""))
-	if waiting.Code != http.StatusOK || !strings.Contains(waiting.Body.String(), "This topic is queued") || !strings.Contains(waiting.Body.String(), "data-on-interval") {
+	if waiting.Code != http.StatusOK || !strings.Contains(waiting.Body.String(), "Waiting for worker") || !strings.Contains(waiting.Body.String(), "data-on-interval") {
 		t.Errorf("redirected queued page must keep polling: %d %s", waiting.Code, waiting.Body.String())
 	}
 	// Status refreshes must preserve polling without adding generation work.

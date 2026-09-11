@@ -173,7 +173,7 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 		if a.pendingSearches != nil {
 			defer a.pendingSearches.Delete(slug)
 		}
-		// SearchTopic starts its bounded deadline after this job acquires the worker.
+		// The generation deadline starts after this job acquires the worker.
 		a.processQueuedTopic(context.Background(), slug)
 	}()
 	return true

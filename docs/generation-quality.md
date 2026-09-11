@@ -20,7 +20,7 @@ This historical observation is not a controlled benchmark or a claim that nonoff
 ## Bounded planner sample
 
 One local SQLite generation used a disposable database, the existing provider credentials, four focused searches with three results each, and a single candidate-review call.
-It searched only the first four of twenty proposed plan items; the production default then allowed twenty searches. The current default is six, so this historical sample does not establish current full-run coverage, latency or cost.
+It searched only the first four of twenty proposed plan items; the production default then allowed twenty searches. This predates the [current discovery limits](product-spec.md#topic-creation), so the historical sample does not establish current full-run coverage, latency or cost.
 No live application data or deployment changed.
 
 | Step | Configuration and observed usage |
@@ -58,18 +58,16 @@ A returned HTTPS alias is preferred without inventing a new destination.
 Repeated `search-topic` calls now resolve those same aliases against stored candidates and pages before upserting, retaining page IDs, reading order and daily-reading references.
 Already-existing historical duplicate rows are retained; this correction introduces no migration or data deletion.
 Meaningful query parameters and section fragments remain part of reading identity; known tracking parameters and the conventional `#top` anchor are removed.
+The same normalization applies when matching and counting stored destinations, including imported pages; it does not rewrite historical assignments or delete duplicate rows.
 
 The review request now requires one result per candidate in its structured schema and prompt.
 If a response nevertheless omits candidates, the available valid decisions remain usable and missing decisions retain NULL scores.
-Duplicate or unknown review indices fail the review and leave candidates unreviewed, instead of publishing ambiguous decisions.
+Duplicate or unknown review indices invalidate that review batch and leave its candidates unreviewed, instead of publishing ambiguous decisions. Valid decisions from earlier batches remain usable when a later batch fails.
 The public evaluation table distinguishes Not reviewed from a genuine zero-score rejection, and counts discovered candidates explicitly.
 
-Queued topic pages continue refreshing status while another explicitly requested generation holds the worker.
-Those GET refreshes never start generation; completed pages stop polling and offer the reading link.
-Provider cancellation or timeout records the original failed run using a separate five-second cleanup context, releases the global running restriction, and exposes the existing explicit retry action.
-The generation itself keeps its original deadline.
+The [Topic Creation contract](product-spec.md#topic-creation) owns waiting, polling, retry, and cancellation-cleanup behavior.
 
-## September 11 diagnosis and current behavior
+## September 11 diagnosis
 
 A read-only production inspection found 1,472 queued topics, all predating the previous deployment: 1,343 had a historical rate-limited attempt and 129 had never run.
 No scheduled queue worker was found in the application or the inspected host configuration.
@@ -77,31 +75,12 @@ The only completed post-deployment generation was Godot: ten stored links from 5
 This is evidence of a working production path, not evidence that the newer planner generally fails.
 Historical completed runs included 293 one-link and 195 two-link catalogs; these remain intact.
 
-The current default aims for three distinct useful readings and accepts at least two as a usable catalog.
-Discovery searches at most six focused queries, requesting at most three results each, in groups of three queries followed by review.
-It stops after three useful readings are available, or after the plan/bound is exhausted; default review uses at most two calls.
-An eligible empty plan uses one bounded three-result fallback search.
-No provider is automatically retried and the whole attempt has a 180-second deadline, with separate five-second persistence cleanup contexts.
-The public admission limit remains twenty topics per UTC day; this does not schedule older queued requests.
-
-Zero or one available distinct reading is a failed, retryable shortfall rather than a completed empty catalog.
-Useful pages and their historical assignments are retained; older one-link reading pages offer an explicit retry without generating on GET.
-A later search/review failure preserves earlier valid decisions and records an honestly failed attempt.
-When at least two useful readings survive, the catalog remains active and readable while the latest attempt offers retry.
-No missing decision is promoted, threshold relaxed, duplicate padded, or provider fault classified as an invalid topic.
-
-Syntax checks reject URL/path/control payloads before any topic/run/provider work.
-Short, punctuated, numeric, Unicode and unfamiliar names remain eligible; C++, C# and .NET receive distinct new slugs, while existing named topics keep their legacy slugs and daily assignments.
-The existing planner request includes a narrow validity decision for clear nonsense or instruction payloads, treating uncertainty as eligible.
-This is not a taxonomy or an authoritative factual validator.
+The resulting generation policy is specified in [Topic Creation](product-spec.md#topic-creation) and [Search Pipeline](product-spec.md#search-pipeline), rather than inferred from historical catalog status.
 
 Deterministic tests cover 0/1/2/3 results, target/maximum stopping, duplicate-only output, provider responses exceeding requested limits, failed later query/review groups and reviewer batches, cancellation cleanup, invalid input with zero provider calls, planner invalidity versus outage, and preserved legacy IDs/assignments.
 The captured SQLite replay deliberately consumes the full recorded response with explicit fixture options; it is not a simulation of all current default retrieval limits.
 Independent interface probes also exposed waiting retries that did not poll and typed C/NET names captured by older C++/.NET slugs.
-Explicit asynchronous work is now tracked per topic in memory, without rewriting database status or scheduling the old backlog; redirects and status panels poll pending retries and suppress duplicate jobs.
-Saved reading pages retain their links while displaying the same updating panel.
-Typed names are resolved before the existing active-catalog shortcut, and autocomplete matches names; direct historical URLs remain unchanged.
-Viewing an existing named catalog still does not implicitly retry generation: its process button is the explicit action.
+Regressions in [waiting_retry_test.go](../cmd/web/waiting_retry_test.go) cover pending retries and unscheduled historical rows; [punctuation_identity_test.go](../cmd/web/punctuation_identity_test.go) covers typed names versus direct legacy URLs.
 No new live-provider quality evaluation has been performed for this revision at this point.
 
 ## Repeating a bounded evaluation

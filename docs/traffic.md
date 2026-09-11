@@ -61,7 +61,7 @@ These limits protect against scanner paths and fabricated referral domains, but 
 The existing SQLite database stores daily counters, not individual request events.
 One writer drains a nonblocking channel of at most 1,024 events and flushes bounded batches every 10 seconds.
 Normal request handlers perform no analytics SQL and create no analytics goroutine.
-The web process uses one shared SQLite pool connection so an analytics commit cannot invalidate a concurrent read-then-write daily-reading transaction; provider calls do not hold a database transaction.
+The web process uses one shared SQLite pool connection so an analytics commit cannot invalidate a concurrent read-then-write daily-reading transaction; provider calls do not hold a database transaction. This serializes only in-process database work, leaves other CLI connection behavior unchanged, and does not coordinate unrelated external writers. The regression is [TestTrafficFlushCannotInvalidateAnApplicationWriteTransaction](../cmd/web/traffic_test.go).
 Daily label caps also bound pending memory and database rows.
 Rows older than the current UTC day plus 89 previous days are removed during flushing.
 
@@ -70,9 +70,9 @@ Database flush failures are retried with a bounded pending batch, counted, and l
 If a failed batch cannot be stored before moving to another UTC day, its pageviews become reported drops rather than growing memory indefinitely.
 The report exposes persisted drops, writer errors and last successful flush; a prolonged storage failure cannot persist its own counters until storage recovers.
 Graceful shutdown drains the queue and attempts a final bounded flush.
-An unexpected process exit can lose the current buffered batch, normally up to 10 seconds; this is lightweight operational analytics, not billing-grade accounting.
+An unexpected process exit can lose queued events and all unflushed counters. Normally this is activity since the last 10-second flush, but repeated storage failures can extend that interval; channel and label caps bound memory, not the age of buffered activity. This is lightweight operational analytics, not billing-grade accounting.
 
 `traffic-report` uses a dedicated `mode=ro` and `query_only` connection against an existing file.
 It performs no migration, schema creation, pruning, provider request or credential load.
-Before collection exists it reports that history is unavailable.
+Before the first successful collection flush it exits with a history-unavailable message; there is no HTML report yet.
 The HTML escapes stored labels and contains no external resources or scripts.
