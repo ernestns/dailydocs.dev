@@ -235,6 +235,50 @@ func TestSearchResponseRespectsRequestedLimit(t *testing.T) {
 	}
 }
 
+func TestEmptyPlanWithReviewerUsesOneBoundedFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		plan PlanOutput
+	}{
+		{name: "empty plan"},
+		{name: "blank planned queries", plan: PlanOutput{Topics: []PlannedTopic{{SearchQueries: []string{"", " "}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn := openTopicSearchTestDB(t, ctx)
+			defer conn.Close()
+			provider := &recordingProvider{resultsByQuery: map[string][]SearchResult{
+				"Example specific concept tutorial guide deep dive documentation": {
+					{Title: "First guide", URL: "https://docs.example.org/first"},
+					{Title: "Second guide", URL: "https://docs.example.org/second"},
+					{Title: "Third guide", URL: "https://docs.example.org/third"},
+					{Title: "Excess guide", URL: "https://docs.example.org/excess"},
+				},
+			}}
+			reviewer := &batchReviewer{}
+			plannerCalls := 0
+			planner := plannerFunc(func(context.Context, string) (PlanOutput, error) {
+				plannerCalls++
+				return tc.plan, nil
+			})
+			result, err := SearchTopic(ctx, conn, "Example", Options{Provider: provider, Planner: planner, Reviewer: reviewer})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plannerCalls != 1 || len(provider.calls) != 1 || provider.calls[0].MaxResults != 3 {
+				t.Fatalf("unexpected fallback work: planner=%d, searches=%+v", plannerCalls, provider.calls)
+			}
+			if len(reviewer.batchSizes) != 1 || reviewer.batchSizes[0] != 3 {
+				t.Fatalf("fallback must retain and review at most three candidates: %v", reviewer.batchSizes)
+			}
+			available, err := AvailableReadings(ctx, conn, result.TopicID)
+			if err != nil || available != 3 || result.ResultCount != 3 || result.StoredCount != 3 {
+				t.Fatalf("unexpected bounded result: %+v, available=%d, err=%v", result, available, err)
+			}
+		})
+	}
+}
+
 type plannerFunc func(context.Context, string) (PlanOutput, error)
 
 func (f plannerFunc) Plan(ctx context.Context, topic string) (PlanOutput, error) {

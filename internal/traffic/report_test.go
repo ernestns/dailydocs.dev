@@ -63,7 +63,7 @@ func TestReportEscapesLabelsAndHasNoExternalResources(t *testing.T) {
 			t.Fatalf("unsafe content %q", forbidden)
 		}
 	}
-	for _, want := range []string{"&lt;script&gt;", "not unique people", "Collection is incomplete", "Private report", "Top pages", "Referral domains"} {
+	for _, want := range []string{"&lt;script&gt;", "not unique people", "Collection is incomplete", "Private report", "Top pages", "Referral domains", "normally flushes every 10 seconds", "older counters may remain buffered or be lost", "Graceful shutdown attempts a bounded flush"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("missing %q", want)
 		}

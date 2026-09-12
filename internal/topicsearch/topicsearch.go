@@ -266,9 +266,6 @@ func searchResolvedTopic(ctx context.Context, conn *sql.DB, slug, name string, o
 			return result, invalid
 		}
 		searchRequests = plannedSearchRequests(name, plan, maxPlannedSearches, maxResultsPerPlannedSearch)
-		if len(searchRequests) == 0 {
-			searchRequests = []SearchRequest{{Query: buildQuery(name), MaxResults: searchLimit}}
-		}
 		if err := updateSearchRunQueryAndStage(ctx, conn, runID, summarizeSearchRequests(searchRequests), runStageSearching); err != nil {
 			return result, err
 		}
