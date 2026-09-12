@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.TopicName}} - DailyDocs</title>
-  {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing}}
+  {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing .Feedback.RetryBlocked}}
   <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"></script>
   {{end}}
   <style>
@@ -91,7 +91,7 @@
         </p>
         <span class="button">Read</span>
       </a>
-      {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing}}
+      {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing .Feedback.RetryBlocked}}
       {{template "topic_status" .Feedback}}
       {{end}}
       <a class="home-link" href="/">Home</a>

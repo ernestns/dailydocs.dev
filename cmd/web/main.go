@@ -160,6 +160,12 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 	if a.searchProvider == nil {
 		return false
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := topicsearch.ExpireStaleRunningSearches(ctx, a.db, a.now()); err != nil {
+		log.Printf("expire stale topic searches failed: %v", err)
+		return false
+	}
 	if !a.asyncProcessing {
 		a.processQueuedTopic(context.Background(), slug)
 		return true

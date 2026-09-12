@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ernestns/daily-docs/internal/topicsearch"
 )
@@ -261,17 +263,23 @@ func TestTopicStatusEndpointRendersStatusFragment(t *testing.T) {
 	ctx := context.Background()
 	conn := openWebTestDB(t, ctx)
 	defer conn.Close()
-	seedWebTopic(t, ctx, conn, "rust", "Rust", "searching")
-	if _, err := conn.ExecContext(ctx, `
-		INSERT INTO topic_search_runs (topic_id, provider, query, status, stage, started_at)
-		VALUES ((SELECT id FROM topics WHERE slug = 'rust'), 'tavily', 'Rust docs', 'running', 'reviewing', datetime('now'))
-	`); err != nil {
-		t.Fatalf("seed running search: %v", err)
+	conn.SetMaxOpenConns(1)
+	reviewer := &blockingStatusReviewer{started: make(chan struct{}), release: make(chan struct{})}
+	a := app{db: conn, now: time.Now, searchMu: &sync.Mutex{}, pendingSearches: &sync.Map{}, searchProvider: &quantityProvider{count: 3}, searchReviewer: reviewer, asyncProcessing: true}
+	var release sync.Once
+	defer func() {
+		release.Do(func() { close(reviewer.release) })
+		waitForWebRequestCompletion(t, a, "rust")
+	}()
+	post := httptest.NewRecorder()
+	a.generateReadingHandler(post, topicRequest(http.MethodPost, "/read", "Rust"))
+	select {
+	case <-reviewer.started:
+	case <-time.After(time.Second):
+		t.Fatal("reviewer did not start")
 	}
-
-	handler := newTestHandler(conn)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/topics/rust/status", nil))
+	a.topicEvaluationsHandler(response, httptest.NewRequest(http.MethodGet, "/topics/rust/status", nil))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
@@ -281,6 +289,9 @@ func TestTopicStatusEndpointRendersStatusFragment(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in status fragment:\n%s", expected, body)
 		}
+	}
+	if strings.Contains(body, "Process topic") || strings.Contains(body, "Retry temporarily unavailable") {
+		t.Fatal("owned reviewer incorrectly offers retry", body)
 	}
 }
 

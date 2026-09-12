@@ -187,6 +187,10 @@ func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, topicname.ErrInvalid.Error(), http.StatusBadRequest)
 		return
 	}
+	if queued.RetryBlocked {
+		renderBlockedTopicRetry(w, r, queued)
+		return
+	}
 	if queued.CanProcess {
 		a.processQueuedTopicAsync(slug)
 	}
@@ -237,6 +241,10 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		if queued.RetryBlocked {
+			renderBlockedTopicRetry(w, r, queued)
+			return
+		}
 		if queued.CanProcess {
 			a.processQueuedTopicAsync(queued.Slug)
 		}
@@ -271,6 +279,16 @@ func (a app) renderTopicStatus(w http.ResponseWriter, r *http.Request, slug stri
 		return
 	}
 	renderTemplateByName(w, topicStatusTemplate, "topic_status", queued)
+}
+
+func renderBlockedTopicRetry(w http.ResponseWriter, r *http.Request, topic queuedTopicView) {
+	if isDatastarRequest(r) {
+		renderTemplateByName(w, topicStatusTemplate, "topic_status", topic)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusConflict)
+	renderTemplate(w, queuedTopicTemplate, topic)
 }
 
 func (a app) searchTopicsHandler(w http.ResponseWriter, r *http.Request) {
@@ -342,6 +360,7 @@ type evaluationResult struct {
 
 type queuedTopicView struct {
 	Pending        bool
+	RetryBlocked   bool
 	AvailableCount int
 	Message        string
 	InvalidTopic   bool
@@ -517,18 +536,15 @@ func parseTopicStatusPath(path string) (string, bool) {
 	return slug, true
 }
 
-func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string) (queuedTopicView, error) {
+func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string, pending bool, now time.Time) (queuedTopicView, error) {
 	var topicID int64
 	if err := conn.QueryRowContext(ctx, "SELECT id FROM topics WHERE slug = ?", slug).Scan(&topicID); err != nil {
 		return queuedTopicView{}, fmt.Errorf("find queued topic: %w", err)
 	}
-	if err := topicsearch.ExpireStaleRunningSearches(ctx, conn, time.Now().UTC()); err != nil {
-		return queuedTopicView{}, err
-	}
-
-	var queued queuedTopicView
+	queued := queuedTopicView{Pending: pending}
 	var runStatus string
 	var runStage string
+	var running bool
 	err := conn.QueryRowContext(ctx, `
 		SELECT
 			t.slug,
@@ -547,15 +563,20 @@ func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string) (queuedTopi
 				WHERE sr.topic_id = t.id
 				ORDER BY sr.started_at DESC, sr.id DESC
 				LIMIT 1
-			), '')
+			), ''),
+			EXISTS (
+				SELECT 1 FROM topic_search_runs sr
+				WHERE sr.topic_id = t.id AND sr.status = 'running' AND sr.started_at >= ?
+			)
 		FROM topics t
 		WHERE t.slug = ?
-	`, slug).Scan(&queued.Slug, &queued.Name, &queued.Status, &runStatus, &runStage)
+	`, now.UTC().Add(-topicsearch.StaleRunTimeout).Format("2006-01-02 15:04:05"), slug).Scan(&queued.Slug, &queued.Name, &queued.Status, &runStatus, &runStage, &running)
 	if err != nil {
 		return queuedTopicView{}, fmt.Errorf("load queued topic: %w", err)
 	}
 	queued.StatusLabel = topicStatusLabel(queued.Status, runStatus, runStage)
-	queued.IsProcessing = queued.Status == "searching"
+	queued.IsProcessing = pending && queued.Status == "searching"
+	queued.RetryBlocked = !pending && running && queued.Status != "disabled"
 	if err := addTopicFeedback(ctx, conn, topicID, runStatus, &queued); err != nil {
 		return queuedTopicView{}, err
 	}

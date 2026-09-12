@@ -23,11 +23,15 @@ func addTopicFeedback(ctx context.Context, conn *sql.DB, topicID int64, runStatu
 		return err
 	}
 	topic.InvalidTopic = strings.HasPrefix(diagnostic, topicname.ErrInvalid.Error()) || topicname.Validate(topic.Name) != nil
-	topic.CanProcess = !topic.IsProcessing && topic.Status != "disabled" && !topic.InvalidTopic && (topic.Status == "queued" || topic.Status == "failed" || count < topicsearch.MinimumUsefulResults || runStatus == "failed")
+	topic.RetryBlocked = topic.RetryBlocked && !topic.InvalidTopic
+	topic.CanProcess = !topic.Pending && !topic.RetryBlocked && topic.Status != "disabled" && !topic.InvalidTopic && (topic.Status == "queued" || topic.Status == "failed" || topic.Status == "searching" || count < topicsearch.MinimumUsefulResults || runStatus == "failed" || runStatus == "running")
 	switch {
 	case topic.InvalidTopic:
 		topic.StatusLabel = "Choose a topic"
 		topic.Message = "Enter a specific subject or technology to find documentation. This request was not treated as a valid topic."
+	case topic.RetryBlocked:
+		topic.StatusLabel = "Retry temporarily unavailable"
+		topic.Message = "The previous request has not been confirmed complete. To avoid overlapping searches, try again when it finishes or its 30-minute timeout expires. Saved links remain available."
 	case topic.IsProcessing:
 		topic.Message = "Finding useful readings. Saved links remain available while this request runs."
 	case topic.Status == "queued":
@@ -40,6 +44,9 @@ func addTopicFeedback(ctx context.Context, conn *sql.DB, topicID int64, runStatu
 		}
 	case runStatus == "failed":
 		topic.Message = "A source or review service could not finish the latest attempt. Your saved readings remain available; you can try again."
+	case topic.Status == "searching":
+		topic.StatusLabel = "Retry available"
+		topic.Message = "Use Process topic to try again. Your saved readings remain available."
 	default:
 		topic.Message = fmt.Sprintf("%d useful distinct readings are available.", count)
 	}
@@ -61,19 +68,17 @@ func addTopicFeedback(ctx context.Context, conn *sql.DB, topicID int64, runStatu
 // Pending work exists only for an explicit request in this process, never for
 // historical queued rows. Keep database/run status unchanged while it waits.
 func (a app) loadTopicStatus(ctx context.Context, slug string) (queuedTopicView, error) {
-	topic, err := loadQueuedTopic(ctx, a.db, slug)
+	var pending bool
+	if a.pendingSearches != nil {
+		_, pending = a.pendingSearches.Load(slug)
+	}
+	topic, err := loadQueuedTopic(ctx, a.db, slug, pending, a.now())
 	if err != nil {
 		return topic, err
 	}
-	if a.pendingSearches != nil {
-		_, topic.Pending = a.pendingSearches.Load(slug)
-		if topic.Pending {
-			topic.CanProcess = false
-			if !topic.IsProcessing {
-				topic.StatusLabel = "Waiting for worker"
-				topic.Message = "This explicit request is waiting for the current worker. The daily limit is checked before generation starts."
-			}
-		}
+	if topic.Pending && !topic.IsProcessing {
+		topic.StatusLabel = "Waiting for worker"
+		topic.Message = "This explicit request is waiting for the current worker. The daily limit is checked before generation starts."
 	}
 	return topic, nil
 }

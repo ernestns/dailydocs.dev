@@ -20,6 +20,10 @@
   <p><a class="button" href="/{{.Slug}}">View reading</a></p>
   {{else if .IsProcessing}}
   <p>This topic is being processed. Results will appear when they are ready.</p>
+  {{else if .RetryBlocked}}
+  <p>Use Process topic to check again later.</p>
+  {{else if eq .Status "searching"}}
+  <p>Use Process topic to request another search.</p>
   {{else if eq .Status "failed"}}
   <p>This attempt did not finish with enough readings. You can keep using the saved links below.</p>
   {{else}}
@@ -29,7 +33,7 @@
   <ul>{{range .Links}}<li><a href="{{.URL}}">{{.Title}}</a></li>{{end}}</ul>
   {{end}}
   {{if .InvalidTopic}}<p><a href="/">Try another topic</a></p>{{end}}
-  {{if .CanProcess}}
+  {{if or .CanProcess .RetryBlocked}}
   <form
     method="post"
     action="/process-topic"
