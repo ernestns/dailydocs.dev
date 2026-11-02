@@ -232,6 +232,11 @@ Search finalization also counts available readings within the transaction that
 records its outcome. A concurrent seed import cannot leave the catalog status
 based on an obsolete reading count.
 
+Interrupting `search-topic` with SIGINT or SIGTERM cancels provider work and lets
+the existing bounded cleanup record the failed attempt before the command exits
+unsuccessfully. Saved readings remain intact, and a later explicit request uses
+the normal admission limits instead of waiting for a stale running search.
+
 Default processing limits for the public and CLI generation paths:
 
 - one topic search at a time globally
@@ -377,6 +382,10 @@ Responsibilities:
 - disable consistently failing links
 
 Broken links should never appear in new recommendations.
+
+When a server rejects HEAD with 405 or 501, the validator checks GET before
+recording a failure. A working reading remains eligible even when its server
+does not support HEAD; a failed GET still counts toward the failure threshold.
 
 If a healthy redirect resolves to another saved URL in the same topic, the
 validator keeps the original working alias and both page IDs, resets its failure

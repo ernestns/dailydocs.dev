@@ -103,7 +103,7 @@ func checkURL(ctx context.Context, client *http.Client, rawURL string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusMethodNotAllowed {
+	if status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented {
 		status, finalURL, err = requestURL(ctx, client, http.MethodGet, rawURL)
 		if err != nil {
 			return "", err

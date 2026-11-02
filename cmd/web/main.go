@@ -41,6 +41,8 @@ func run() error {
 	ctx := context.Background()
 
 	if len(os.Args) > 1 {
+		ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
 		return runCommand(ctx, os.Args[1:])
 	}
 
