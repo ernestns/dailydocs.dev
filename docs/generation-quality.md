@@ -59,6 +59,11 @@ Repeated `search-topic` calls now resolve those same aliases against stored cand
 Already-existing historical duplicate rows are retained; this correction introduces no migration or data deletion.
 Meaningful query parameters and section fragments remain part of reading identity; known tracking parameters and the conventional `#top` anchor are removed.
 The same normalization applies when matching and counting stored destinations, including imported pages; it does not rewrite historical assignments or delete duplicate rows.
+An explicit refresh reuses the existing page and candidate identity for a matching
+destination, preferring an exact saved URL and then the oldest matching row.
+This prevents tracking parameters or other already-normalized URL differences
+from adding another copy to the daily rotation. Saved URLs remain intact except
+for the verified SQLite HTTP-to-HTTPS upgrade described above.
 
 The review request now requires one result per candidate in its structured schema and prompt.
 If a response nevertheless omits candidates, the available valid decisions remain usable and missing decisions retain NULL scores.

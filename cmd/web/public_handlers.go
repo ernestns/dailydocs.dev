@@ -433,16 +433,16 @@ func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]t
 	`
 	args := []any{}
 	if query != "" {
-		sqlQuery += ` AND (slug LIKE ? ESCAPE '\' OR lower(name) LIKE ? ESCAPE '\')`
+		sqlQuery += ` AND (dailydocs_lower(slug) LIKE ? ESCAPE '\' OR dailydocs_lower(name) LIKE ? ESCAPE '\')`
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
 		like := "%" + escaped + "%"
 		args = append(args, like, like)
 		// Rank before limiting so an exact topic cannot be hidden by earlier
 		// alphabetical substring matches.
 		sqlQuery += ` ORDER BY CASE
-			WHEN lower(name) = ? THEN 0
-			WHEN slug = ? THEN 1
-			WHEN lower(name) LIKE ? ESCAPE '\' OR slug LIKE ? ESCAPE '\' THEN 2
+			WHEN dailydocs_lower(name) = ? THEN 0
+			WHEN dailydocs_lower(slug) = ? THEN 1
+			WHEN dailydocs_lower(name) LIKE ? ESCAPE '\' OR dailydocs_lower(slug) LIKE ? ESCAPE '\' THEN 2
 			ELSE 3 END, name COLLATE NOCASE, id`
 		args = append(args, query, query, escaped+"%", escaped+"%")
 	} else {

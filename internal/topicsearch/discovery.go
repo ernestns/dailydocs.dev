@@ -28,7 +28,7 @@ func ResolveTopic(ctx context.Context, conn topicLookup, value string) (string, 
 		slug += "-topic"
 	}
 	var existingSlug, existingName string
-	err := conn.QueryRowContext(ctx, "SELECT slug,name FROM topics WHERE lower(name)=lower(?) ORDER BY id LIMIT 1", name).Scan(&existingSlug, &existingName)
+	err := conn.QueryRowContext(ctx, "SELECT slug,name FROM topics WHERE dailydocs_lower(name)=dailydocs_lower(?) ORDER BY id LIMIT 1", name).Scan(&existingSlug, &existingName)
 	if err == nil {
 		return existingSlug, existingName, nil
 	}

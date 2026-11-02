@@ -80,8 +80,8 @@ func topicCatalogWhere(filter topicCatalogFilter) (string, []any) {
 		args = append(args, filter.Status)
 	}
 	if filter.Query != "" {
-		where += ` AND (t.slug LIKE ? ESCAPE '\' OR t.name LIKE ? ESCAPE '\')`
-		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(filter.Query)
+		where += ` AND (dailydocs_lower(t.slug) LIKE ? ESCAPE '\' OR dailydocs_lower(t.name) LIKE ? ESCAPE '\')`
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(strings.ToLower(filter.Query))
 		like := "%" + escaped + "%"
 		args = append(args, like, like)
 	}

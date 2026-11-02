@@ -303,6 +303,11 @@ DailyDocs publicly shows:
 
 Autocomplete is supported for existing topics, with exact matches based on the topic name rather than a potentially colliding legacy slug.
 
+Typed lookup, autocomplete, and catalog filters use consistent Unicode lowercase
+matching for names, including accented and non-Latin letters. Case variants reuse
+an existing named catalog even when its saved URL uses a different spelling;
+stored names, URLs, and historical assignments remain unchanged.
+
 Exact names and topic URLs rank ahead of prefix and substring matches before
 the suggestion limit is applied. Editing the query clears previous suggestions.
 Loading and unavailable suggestions are distinct from a completed search with

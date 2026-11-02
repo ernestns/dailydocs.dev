@@ -888,7 +888,7 @@ func nextReadingOrder(ctx context.Context, tx *sql.Tx, topicID int64) (int, erro
 }
 
 func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, result storedResult) (int64, error) {
-	result, err := reuseStoredSQLiteURL(ctx, tx, "pages", topicID, result)
+	result, err := reuseStoredReadingURL(ctx, tx, "pages", topicID, result)
 	if err != nil {
 		return 0, err
 	}
@@ -925,7 +925,7 @@ func upsertPage(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, res
 }
 
 func upsertSearchCandidate(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, result storedResult) error {
-	result, err := reuseStoredSQLiteURL(ctx, tx, "topic_search_results", topicID, result)
+	result, err := reuseStoredReadingURL(ctx, tx, "topic_search_results", topicID, result)
 	if err != nil {
 		return err
 	}
@@ -964,7 +964,7 @@ func upsertSearchCandidate(ctx context.Context, tx *sql.Tx, topicID int64, runID
 }
 
 func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID int64, pageID sql.NullInt64, result storedResult) error {
-	result, err := reuseStoredSQLiteURL(ctx, tx, "topic_search_results", topicID, result)
+	result, err := reuseStoredReadingURL(ctx, tx, "topic_search_results", topicID, result)
 	if err != nil {
 		return err
 	}
@@ -1010,47 +1010,59 @@ func upsertSearchResult(ctx context.Context, tx *sql.Tx, topicID int64, runID in
 	return nil
 }
 
-// Resolve the same verified SQLite identity across searches as within one batch.
+// Match stored destinations with the same normalization used within one batch,
+// including imported URLs that have not previously passed through discovery.
 // Existing IDs, reading order and references survive; historical duplicates are not deleted.
-func reuseStoredSQLiteURL(ctx context.Context, tx *sql.Tx, table string, topicID int64, result storedResult) (storedResult, error) {
-	parsed, err := url.Parse(readingURLKey(result.URL))
-	if err != nil || parsed.User != nil || parsed.Host != "sqlite.org" || parsed.Scheme != "https" {
-		return result, nil
-	}
+func reuseStoredReadingURL(ctx context.Context, tx *sql.Tx, table string, topicID int64, result storedResult) (storedResult, error) {
 	// Table names are internal constants, never provider or request input.
 	if table != "pages" && table != "topic_search_results" {
 		return storedResult{}, fmt.Errorf("unsupported reading identity table %q", table)
 	}
-	var aliases []any
-	for _, scheme := range []string{"https", "http"} {
-		for _, host := range []string{"sqlite.org", "www.sqlite.org"} {
-			parsed.Scheme, parsed.Host = scheme, host
-			aliases = append(aliases, parsed.String())
-		}
+	// Prefer an exact existing row if a historical catalog already contains aliases.
+	rows, err := tx.QueryContext(ctx, "SELECT id, url FROM "+table+`
+		WHERE topic_id = ? ORDER BY (url = ?) DESC, id
+	`, topicID, result.URL)
+	if err != nil {
+		return storedResult{}, fmt.Errorf("resolve stored reading URL: %w", err)
 	}
+	defer rows.Close()
+	key := readingURLKey(result.URL)
 	var id int64
 	var existingURL string
-	// Prefer an exact existing row if a historical catalog already contains aliases.
-	err = tx.QueryRowContext(ctx, "SELECT id, url FROM "+table+`
-		WHERE topic_id = ? AND url IN (?, ?, ?, ?)
-		ORDER BY (url = ?) DESC, id LIMIT 1
-	`, topicID, aliases[0], aliases[1], aliases[2], aliases[3], result.URL).Scan(&id, &existingURL)
-	if errors.Is(err, sql.ErrNoRows) {
+	found := false
+	for rows.Next() {
+		if err := rows.Scan(&id, &existingURL); err != nil {
+			return storedResult{}, fmt.Errorf("read stored reading URL: %w", err)
+		}
+		if readingURLKey(existingURL) == key {
+			found = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return storedResult{}, fmt.Errorf("read stored reading URLs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return storedResult{}, fmt.Errorf("close stored reading URLs: %w", err)
+	}
+	if !found {
 		return result, nil
 	}
-	if err != nil {
-		return storedResult{}, fmt.Errorf("resolve stored SQLite URL: %w", err)
-	}
-	if strings.HasPrefix(existingURL, "http://") && strings.HasPrefix(result.URL, "https://") {
+	parsed, err := url.Parse(key)
+	verifiedSQLite := err == nil && parsed.User == nil && parsed.Host == "sqlite.org" && parsed.Scheme == "https"
+	if verifiedSQLite && strings.HasPrefix(existingURL, "http://") && strings.HasPrefix(result.URL, "https://") {
 		// Upgrade only to the actual HTTPS destination returned by this search.
 		if _, err := tx.ExecContext(ctx, "UPDATE "+table+" SET url = ? WHERE id = ?", result.URL, id); err != nil {
 			return storedResult{}, fmt.Errorf("update stored SQLite destination: %w", err)
 		}
 	} else {
-		result.URL, result.Source, err = normalizeURL(existingURL)
+		// Conflict against the stored spelling, not its normalized form; otherwise
+		// an imported tracking URL would still create a second page and rotation slot.
+		_, result.Source, err = normalizeURL(existingURL)
 		if err != nil {
 			return storedResult{}, err
 		}
+		result.URL = existingURL
 	}
 	return result, nil
 }
