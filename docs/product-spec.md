@@ -318,6 +318,10 @@ Page numbers must be positive integers; invalid page or status values return a b
 The catalog includes topics without readings and distinguishes distinct active reading destinations from accepted candidate rows and all discovered candidates. It excludes disabled topics.
 Direct visits to disabled topics explain that new readings and processing are
 unavailable, while preserving access to saved links and dated assignments.
+
+Catalog browsing does not acquire a database writer when there are no stale
+searches or abandoned searching topics to clean up. Actual cleanup rechecks
+stored state under its transaction so a completed search is not overwritten.
 Stored active catalogs with fewer than two readings are labeled as needing more readings; queued topics without readings are shown as not generated.
 
 ## Link Validation

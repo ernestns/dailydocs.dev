@@ -212,14 +212,24 @@ Create a compressed backup using SQLite's backup mechanism:
 DB_PATH=/opt/dailydocs/data/dailydocs.sqlite BACKUP_DIR=/opt/dailydocs/backups ./scripts/backup-sqlite.sh
 ```
 
-The script prints the backup path.
+The script prints the completed backup path, named
+`dailydocs-<UTC timestamp>.<unique suffix>.sqlite.gz`. Use that printed path when
+restoring. Concurrent backups, including calls within the same second, keep
+separate recovery points.
+
+SQLite creates a coherent snapshot, including committed WAL data. Compression
+runs in a private staging directory on the backup filesystem; the completed
+archive is then published atomically without replacing an existing destination.
+Snapshot, compression, or publication failures preserve earlier backups and
+remove the script's staging files. Archives use mode `0600`, and newly created
+backup directories use mode `0700` regardless of the caller's umask.
 
 ## Restore SQLite
 
 Restore requires an explicit confirmation environment variable because it replaces the database contents:
 
 ```sh
-RESTORE_CONFIRM=replace-dailydocs-db DB_PATH=/opt/dailydocs/data/dailydocs.sqlite ./scripts/restore-sqlite.sh /opt/dailydocs/backups/dailydocs-YYYYMMDDTHHMMSSZ.sqlite.gz
+RESTORE_CONFIRM=replace-dailydocs-db DB_PATH=/opt/dailydocs/data/dailydocs.sqlite ./scripts/restore-sqlite.sh /opt/dailydocs/backups/dailydocs-YYYYMMDDTHHMMSSZ.ABC123.sqlite.gz
 ```
 
 The destination database must already exist with the application user's ownership

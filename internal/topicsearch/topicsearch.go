@@ -539,6 +539,29 @@ func searchRateLimited(ctx context.Context, conn *sql.DB, now time.Time, minInte
 
 func ExpireStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time) error {
 	cutoff := now.Add(-StaleRunTimeout)
+	// Catalog reads should not acquire SQLite's writer lock when there is no
+	// cleanup work. The transaction below rechecks these predicates after it
+	// acquires the lock, since a worker may finish while cleanup is waiting.
+	var needsCleanup bool
+	if err := conn.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM topic_search_runs
+			WHERE status = ? AND started_at < ?
+		) OR EXISTS (
+			SELECT 1 FROM topics
+			WHERE status = 'searching'
+				AND NOT EXISTS (
+					SELECT 1 FROM topic_search_runs
+					WHERE topic_search_runs.topic_id = topics.id
+						AND topic_search_runs.status = ?
+				)
+		)
+	`, runStatusRunning, formatTime(cutoff), runStatusRunning).Scan(&needsCleanup); err != nil {
+		return fmt.Errorf("check stale running searches: %w", err)
+	}
+	if !needsCleanup {
+		return nil
+	}
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin expire stale running searches: %w", err)
