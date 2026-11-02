@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const script = fs.readFileSync(0, "utf8");
 
-function setup(restoredValue = "", suggestions = undefined) {
+function setup(restoredValue = "", suggestions = undefined, transport = undefined) {
   const requests = [];
   const listeners = new Map();
   function element(id) {
@@ -25,6 +25,7 @@ function setup(restoredValue = "", suggestions = undefined) {
   // Leave autocomplete pending: enable/disable must not wait for the network.
   const context = vm.createContext({document, window, AbortController, fetch(path) {
     requests.push(path);
+    if (transport) return transport(path);
     return suggestions === undefined ? new Promise(() => {}) : Promise.resolve({ok: true, async json() {
       return typeof suggestions === "function" ? suggestions(path) : suggestions;
     }});
@@ -96,6 +97,12 @@ async function testAutocomplete() {
   key("ArrowDown");
   assert.equal(results.hidden, false, "ArrowDown must reopen the options");
   selected(0);
+  key("ArrowDown"); key("Enter");
+  assert.equal(input.value, "Godot");
+  key("ArrowDown"); selected(0);
+  assert.equal(results.children[0].textContent, "Godot", "reopened suggestion must match the selected topic");
+  key("Enter");
+  assert.equal(input.value, "Godot", "Enter must select the visible highlighted topic");
 
   for (const [plain, name, slug] of [["C", "C++", "c"], ["NET", ".NET", "net"]]) {
     const identity = setup(plain, [{slug, name}]);
@@ -141,6 +148,57 @@ async function testAutocomplete() {
     assert.equal(button.disabled, true);
   }
   console.log("Actual home script passed: network options, ArrowDown/ArrowUp bounds, Enter selection, Escape dismissal, accessible active state, colliding names, and null/empty response recovery with real search responses.");
+
+  const pending = [];
+  const asynchronous = setup("Go", undefined, () => new Promise((resolve, reject) => pending.push({resolve, reject})));
+  const field = asynchronous.elements["topic-input"], list = asynchronous.elements["topic-results"];
+  const action = asynchronous.elements["topic-button"], message = asynchronous.elements["topic-status"];
+  const inputChanged = asynchronous.listeners.get("topic-input:input");
+  const respond = (request, topics) => request.resolve({ok: true, async json() { return topics; }});
+  const first = inputChanged();
+  respond(pending.shift(), [{slug: "go", name: "Go"}]); await first;
+  field.value = "Rust";
+  const second = inputChanged();
+  assert.equal(list.hidden, true, "old suggestions must be hidden immediately while a new lookup is pending");
+  assert.equal(list.children.length, 0, "stale suggestions must not remain keyboard selectable");
+  assert.equal(action.textContent, "View Reading", "pending lookup must not claim the topic is missing");
+  assert.equal(message.textContent, "Checking topics…");
+  const outdated = pending.shift();
+  field.value = "SQLite";
+  const third = inputChanged();
+  respond(pending.shift(), [{slug: "sqlite", name: "SQLite"}]); await third;
+  respond(outdated, [{slug: "rust", name: "Rust"}]); await second;
+  assert.deepEqual(list.children.map(option => option.textContent), ["SQLite"], "a late response must not replace the current suggestions");
+  for (const failure of ["http", "network", "json"]) {
+    field.value = "Go";
+    const lookup = inputChanged();
+    const request = pending.shift();
+    if (failure === "network") request.reject(new Error("offline"));
+    else request.resolve({ok: failure !== "http", async json() { throw new Error("invalid response"); }});
+    await lookup;
+    assert.equal(list.hidden, true);
+    assert.equal(action.disabled, false, "a suggestion outage must not prevent ordinary form submission");
+    assert.equal(action.textContent, "View Reading");
+    assert.equal(message.textContent, "Topic suggestions are unavailable. You can still submit your topic.");
+  }
+  field.value = "Go";
+  const clearing = inputChanged();
+  const obsolete = pending.shift();
+  field.value = ""; await inputChanged();
+  respond(obsolete, [{slug: "go", name: "Go"}]); await clearing;
+  assert.equal(list.hidden, true, "cleared input must stay empty after a late response");
+  assert.equal(list.children.length, 0);
+  assert.equal(action.disabled, true);
+  for (const dismiss of ["escape", "blur"]) {
+    field.value = "Go";
+    const lookup = inputChanged();
+    if (dismiss === "escape") asynchronous.listeners.get("topic-input:keydown")({key: "Escape", preventDefault() {}});
+    else asynchronous.listeners.get("topic-input:blur")();
+    respond(pending.shift(), [{slug: "go", name: "Go"}]); await lookup;
+    assert.equal(list.hidden, true, "a late response must respect " + dismiss + " dismissal");
+    assert.equal(field.getAttribute("aria-expanded"), "false");
+  }
+  console.log("Actual home script passed: stale options cleared, late responses ignored, and HTTP/network/JSON failures remain recoverable.");
 }
 
 testAutocomplete().catch(error => { console.error(error); process.exitCode = 1; });

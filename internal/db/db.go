@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,14 +26,13 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	conn, err := sql.Open("sqlite", path)
+	dsn, err := connectionString(path)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
-	}
-
-	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
 	}
 
 	if _, err := conn.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
@@ -46,6 +46,22 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 	}
 
 	return conn, nil
+}
+
+func connectionString(path string) (string, error) {
+	base, query, _ := strings.Cut(path, "?")
+	params, err := url.ParseQuery(query)
+	if err != nil {
+		return "", fmt.Errorf("parse sqlite options: %w", err)
+	}
+	// Connection-local pragmas must also apply when database/sql opens or
+	// replaces a pooled connection. A one-time Exec only configures one.
+	params.Add("_pragma", "foreign_keys(1)")
+	params.Add("_pragma", "busy_timeout(5000)")
+	// Acquire the writer before a transaction reads its snapshot. Waiting only
+	// at INSERT cannot recover a deferred read-to-write snapshot conflict.
+	params.Set("_txlock", "immediate")
+	return base + "?" + params.Encode(), nil
 }
 
 func ensureParentDir(path string) error {

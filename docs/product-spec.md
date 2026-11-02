@@ -146,6 +146,10 @@ The topic-only URL is the common bookmarkable URL and resolves to today's readin
 
 The dated URL is the stable archive URL for a specific reading date.
 
+Each reading page offers a dated link to share or save that reading and a topic
+link to return to today's reading. Following a dated link does not advance or
+replace its saved assignment.
+
 The topic path segment uses the topic slug. The date path segment uses `YYYY-MM-DD`.
 
 ## Reading Selection
@@ -244,6 +248,12 @@ DailyDocs publicly shows:
 ### Search Topics
 
 Autocomplete is supported for existing topics, with exact matches based on the topic name rather than a potentially colliding legacy slug.
+
+Exact names and topic URLs rank ahead of prefix and substring matches before
+the suggestion limit is applied. Editing the query clears previous suggestions.
+Loading and unavailable suggestions are distinct from a completed search with
+no matches; visitors can still submit the topic when suggestions are unavailable.
+Keyboard dismissal remains respected if a pending response arrives later.
 
 If a topic does not exist, the UI should clearly offer to request the topic.
 

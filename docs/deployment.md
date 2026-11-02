@@ -65,6 +65,11 @@ That helper is the only passwordless root command required for routine deploys.
 
 ## Build
 
+The module requires Go 1.26.10 or newer, including the October 2026 standard-library
+security fixes. Standard Go toolchain selection downloads the required patch
+when the installed Go version is older; it does not replace the host's Go binary.
+Run `just pre-deploy` before publishing a release.
+
 ```sh
 ./scripts/build.sh
 ```
@@ -174,6 +179,11 @@ DB_PATH=data/dailydocs.sqlite ./bin/dailydocs validate-links
 ```
 
 ## Backup SQLite
+
+Application connections enforce foreign keys and wait up to five seconds for
+brief writer contention. Transactions that may create a daily assignment acquire
+the writer lock before reading, while saved readings use read-only transactions.
+This preserves one shared assignment when several visitors arrive together.
 
 Create a compressed backup using SQLite's backup mechanism:
 

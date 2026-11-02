@@ -139,7 +139,7 @@
         </div>
         <button type="submit" id="topic-button">View Reading</button>
       </form>
-      <p class="lookup-status" id="topic-status"></p>
+      <p class="lookup-status" id="topic-status" role="status" aria-live="polite"></p>
       <p><a href="/topics">All topics</a></p>
     </section>
   </main>
@@ -151,6 +151,9 @@
     let controller = null;
     let matches = [];
     let activeIndex = -1;
+    let lookupState = "idle";
+    let requestID = 0;
+    let suggestionsDismissed = false;
 
     function exactMatch() {
       const value = input.value.trim().toLowerCase();
@@ -189,6 +192,7 @@
       if (!topic) return;
       input.value = topic.name;
       matches = [topic];
+      renderResults();
       closeResults();
       setLookupState();
     }
@@ -210,7 +214,7 @@
       });
       activeIndex = -1;
       updateActiveOption();
-      if (matches.length > 0) openResults();
+      if (matches.length > 0 && !suggestionsDismissed) openResults();
       else closeResults();
     }
 
@@ -220,6 +224,13 @@
       if (!value) {
         button.textContent = "View Reading";
         status.textContent = "";
+        return;
+      }
+
+      if (lookupState !== "ready") {
+        button.textContent = "View Reading";
+        status.textContent = lookupState === "loading" ? "Checking topics…" :
+          lookupState === "error" ? "Topic suggestions are unavailable. You can still submit your topic." : "";
         return;
       }
 
@@ -235,47 +246,54 @@
 
     input.addEventListener("input", async () => {
       const value = input.value.trim();
+      const currentRequest = ++requestID;
+      suggestionsDismissed = false;
       if (controller) controller.abort();
+      matches = [];
+      renderResults();
+      lookupState = value ? "loading" : "idle";
       setLookupState();
-      if (!value) {
-        matches = [];
-        renderResults();
-        setLookupState();
-        return;
-      }
+      if (!value) return;
 
       controller = new AbortController();
       try {
         const response = await fetch("/topics/search?q=" + encodeURIComponent(value), { signal: controller.signal });
-        if (!response.ok) return;
+        if (!response.ok) throw new Error("Topic lookup failed");
         const topics = await response.json();
+        if (currentRequest !== requestID || input.value.trim() !== value) return;
         matches = Array.isArray(topics) ? topics : [];
+        lookupState = "ready";
         renderResults();
         setLookupState();
       } catch (error) {
-        if (error.name !== "AbortError") status.textContent = "";
+        if (currentRequest !== requestID || error.name === "AbortError") return;
+        lookupState = "error";
+        setLookupState();
       }
     });
 
     input.addEventListener("keydown", (event) => {
       if (event.key === "ArrowDown") {
         event.preventDefault();
+        suggestionsDismissed = false;
         if (results.hidden) openResults();
         activeIndex = Math.min(activeIndex + 1, matches.length - 1);
         updateActiveOption();
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
-        activeIndex = Math.max(activeIndex - 1, 0);
+        activeIndex = matches.length ? Math.max(activeIndex - 1, 0) : -1;
         updateActiveOption();
       } else if (event.key === "Enter" && activeIndex >= 0 && !results.hidden) {
         event.preventDefault();
         selectMatch(activeIndex);
       } else if (event.key === "Escape") {
+        suggestionsDismissed = true;
         closeResults();
       }
     });
 
     input.addEventListener("blur", () => {
+      suggestionsDismissed = true;
       window.setTimeout(closeResults, 100);
     });
 

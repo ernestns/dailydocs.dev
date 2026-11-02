@@ -32,7 +32,7 @@ func GetDailyReading(ctx context.Context, conn *sql.DB, topicSlug string, date s
 		return Reading{}, err
 	}
 
-	tx, err := conn.BeginTx(ctx, nil)
+	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return Reading{}, fmt.Errorf("begin daily reading: %w", err)
 	}
@@ -60,6 +60,14 @@ func GetDailyReading(ctx context.Context, conn *sql.DB, topicSlug string, date s
 func GetOrCreateDailyReading(ctx context.Context, conn *sql.DB, topicSlug string, date string) (Reading, error) {
 	dayNumber, err := dayNumber(date)
 	if err != nil {
+		return Reading{}, err
+	}
+
+	// Existing assignments and unknown topics need no writer lock. Recheck a
+	// missing assignment in the write transaction in case another reader wins.
+	if existing, err := GetDailyReading(ctx, conn, topicSlug, date); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, ErrReadingNotFound) {
 		return Reading{}, err
 	}
 

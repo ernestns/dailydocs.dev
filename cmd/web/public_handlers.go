@@ -383,11 +383,21 @@ func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]t
 	`
 	args := []any{}
 	if query != "" {
-		sqlQuery += " AND (slug LIKE ? OR lower(name) LIKE ?)"
-		like := "%" + query + "%"
+		sqlQuery += ` AND (slug LIKE ? ESCAPE '\' OR lower(name) LIKE ? ESCAPE '\')`
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+		like := "%" + escaped + "%"
 		args = append(args, like, like)
+		// Rank before limiting so an exact topic cannot be hidden by earlier
+		// alphabetical substring matches.
+		sqlQuery += ` ORDER BY CASE
+			WHEN lower(name) = ? THEN 0
+			WHEN slug = ? THEN 1
+			WHEN lower(name) LIKE ? ESCAPE '\' OR slug LIKE ? ESCAPE '\' THEN 2
+			ELSE 3 END, name COLLATE NOCASE, id`
+		args = append(args, query, query, escaped+"%", escaped+"%")
+	} else {
+		sqlQuery += " ORDER BY name COLLATE NOCASE, id"
 	}
-	sqlQuery += " ORDER BY name ASC"
 	if limit > 0 {
 		sqlQuery += fmt.Sprintf(" LIMIT %d", limit)
 	}

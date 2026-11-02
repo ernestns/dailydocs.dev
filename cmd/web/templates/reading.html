@@ -23,6 +23,8 @@
     }
     article {
       width: min(42rem, 100%);
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
     article a.reading-link {
       display: block;
@@ -70,19 +72,32 @@
       background: #1f2933;
       text-decoration: none;
     }
-    .home-link {
-      display: inline-block;
+    .reading-navigation {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem 1.25rem;
       margin-top: 1.5rem;
+    }
+    .reading-navigation a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 2.75rem;
       color: #52606d;
+      line-height: 1.5;
+    }
+    a:focus-visible {
+      outline: 3px solid #486581;
+      outline-offset: 4px;
+      border-radius: 3px;
     }
   </style>
 </head>
 <body>
   <main>
     <article>
+      <p class="date"><time datetime="{{.Date}}">{{.Date}}</time></p>
+      <h1>{{.TopicName}}</h1>
       <a class="reading-link" href="{{.URL}}">
-        <p class="date">{{.Date}}</p>
-        <h1>{{.TopicName}}</h1>
         <h2>{{.Title}}</h2>
         <p>
           {{if .Source}}{{.Source}}{{else}}Documentation{{end}}
@@ -94,7 +109,11 @@
       {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing .Feedback.RetryBlocked}}
       {{template "topic_status" .Feedback}}
       {{end}}
-      <a class="home-link" href="/">Home</a>
+      <nav class="reading-navigation" aria-label="Reading navigation">
+        <a href="/{{.TopicSlug}}/{{.Date}}">Share or save this reading</a>
+        <a href="/{{.TopicSlug}}">Today's reading</a>
+        <a class="home-link" href="/">Home</a>
+      </nav>
     </article>
   </main>
 </body>
