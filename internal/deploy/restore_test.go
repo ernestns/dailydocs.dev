@@ -51,10 +51,14 @@ func TestRestoreReplacesCrashWALAndKeepsCompleteSafetySnapshot(t *testing.T) {
 }
 
 func TestRestorePreservesInactiveServiceState(t *testing.T) {
-	f := newRestoreFixture(t)
-	f.restore(true, "RESTORE_TEST_SERVICE_STATE=inactive")
-	f.requireRows(f.database, "restored reading")
-	f.requireServiceActions("show")
+	for _, state := range []string{"inactive", "failed"} {
+		t.Run(state, func(t *testing.T) {
+			f := newRestoreFixture(t)
+			f.restore(true, "RESTORE_TEST_SERVICE_STATE="+state)
+			f.requireRows(f.database, "restored reading")
+			f.requireServiceActions("show")
+		})
+	}
 }
 
 func TestRestoreFailureKeepsCurrentDataAndResumesStoppedService(t *testing.T) {

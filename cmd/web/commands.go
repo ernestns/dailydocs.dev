@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/ernestns/daily-docs/internal/db"
 	"github.com/ernestns/daily-docs/internal/seed"
@@ -57,6 +58,10 @@ func runCommand(ctx context.Context, args []string) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: dailydocs search-topic topic")
 		}
+		apiKey := strings.TrimSpace(os.Getenv("TAVILY_API_KEY"))
+		if apiKey == "" {
+			return fmt.Errorf("TAVILY_API_KEY is required")
+		}
 
 		conn, err := db.Open(ctx, os.Getenv("DB_PATH"))
 		if err != nil {
@@ -66,7 +71,7 @@ func runCommand(ctx context.Context, args []string) error {
 
 		result, err := topicsearch.SearchTopic(ctx, conn, args[1], topicsearch.Options{
 			Provider: topicsearch.TavilyClient{
-				APIKey:   os.Getenv("TAVILY_API_KEY"),
+				APIKey:   apiKey,
 				Endpoint: os.Getenv("TAVILY_ENDPOINT"),
 			},
 			Planner:  openAIPlannerFromEnv(),

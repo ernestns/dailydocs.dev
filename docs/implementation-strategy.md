@@ -183,6 +183,10 @@ Current topic-search command:
 dailydocs search-topic rust
 ```
 
+`search-topic` requires a nonempty `TAVILY_API_KEY`. Missing or whitespace-only
+configuration is rejected before opening SQLite or calling the planner, so a
+configuration error cannot create database files or alter saved search history.
+
 For the private reporting command and SSH recipe, see [traffic.md](traffic.md#view-the-report).
 
 ## Deployment

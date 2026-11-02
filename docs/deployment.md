@@ -261,6 +261,10 @@ The restore script:
 - resumes only the service it stopped, including after a failed restore attempt;
   a previously inactive service stays inactive
 
+The script records an active service's stop before waiting for the stop command,
+so interruption immediately after a successful stop still resumes that service.
+An ordinary stop failure exits without attempting restoration or a restart.
+
 The snapshot path is printed before restoration begins and remains available if
 restoration fails. Restart failures produce a nonzero exit and an explicit error.
 Restore integration tests use temporary SQLite databases, a real crashed writer,

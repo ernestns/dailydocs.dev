@@ -100,8 +100,14 @@ if command -v systemctl >/dev/null 2>&1; then
 	fi
 	case "$service_state" in
 		active)
-			systemctl stop "$APP_NAME.service"
+			# A signal can arrive after stop succeeds but before its foreground
+			# command returns. Cleanup must already know to resume this service.
 			service_stopped=1
+			systemctl stop "$APP_NAME.service" || {
+				stop_status=$?
+				service_stopped=0
+				exit "$stop_status"
+			}
 			;;
 		inactive|failed)
 			;;
