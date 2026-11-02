@@ -178,6 +178,10 @@ Missing topics are requested by topic name only. Users are not asked to provide 
 
 Typed names are resolved before looking up an existing active catalog. A historical C++ catalog at `/c` cannot capture typed C, nor can .NET at `/net` capture typed NET. Matching existing names and direct historical URLs retain their identities and daily assignments. Viewing an existing named active catalog, including a legacy one-link catalog, remains a lookup; use **Process topic** to request a retry.
 
+Submitting an existing active topic uses a read-only snapshot and remains
+available while another connection writes. Requests that need catalog creation
+recheck identity and status after acquiring the writer lock.
+
 When a missing topic is explicitly requested with POST `/read`:
 
 1. Validate the topic name and resolve its identity, preserving existing names and URLs.
@@ -194,7 +198,10 @@ page explains the pause instead of offering a process action that cannot run.
 Daily-limit feedback names the next UTC midnight; refreshing then restores the
 explicit retry action. Existing readings and saved requests remain available.
 Workers recheck capacity after waiting, so a request admitted earlier cannot
-bypass a limit reached while it was waiting.
+bypass a limit reached while it was waiting. Queued processing checks the daily
+limit and whether the catalog still needs processing in the same transaction
+that reserves its search run. A catalog completed by another process while a
+request waits does not trigger duplicate generation.
 
 Queued means saved, not automatically scheduled; the application has no background queue pump. Only explicitly submitted asynchronous work is tracked in memory per topic, suppressing duplicate pending jobs. While waiting for the single worker, its status panel says **Waiting for worker** without changing the stored topic/run status. Redirected pages, saved reading pages, and status GETs continue polling pending or running work and stop when it finishes. These GETs do not create topics, enqueue jobs, or call providers.
 
@@ -213,6 +220,10 @@ Default processing limits for the public and CLI generation paths:
 - an eligible empty plan uses one fallback search of at most three results
 - stop at three useful distinct readings or the attempt bound; never lower acceptance criteria to fill a quota
 - no automatic provider retry, historical queue backfill, or catalog regeneration
+
+Search admission checks the global running-search and minimum-interval guards
+and reserves its run in one transaction across web and CLI processes. The
+transaction closes before planner, search, or review provider calls begin.
 
 Explicit internal test/evaluation options can override retrieval and review batch sizes; they do not change these defaults.
 

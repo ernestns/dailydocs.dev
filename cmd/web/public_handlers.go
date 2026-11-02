@@ -523,9 +523,38 @@ func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topic
 	return topic, results, nil
 }
 
+func (a app) lookupActiveTopic(ctx context.Context, topic string) (queuedTopicView, bool, error) {
+	// Resolve identity and status in one read snapshot so an existing-catalog
+	// form submission stays available while another connection is writing.
+	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return queuedTopicView{}, false, fmt.Errorf("begin existing topic lookup: %w", err)
+	}
+	defer tx.Rollback()
+	slug, name, err := topicsearch.ResolveTopic(ctx, tx, topic)
+	if err != nil {
+		return queuedTopicView{}, false, err
+	}
+	var active bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=? AND status='active')", slug).Scan(&active); err != nil {
+		return queuedTopicView{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return queuedTopicView{}, false, fmt.Errorf("finish existing topic lookup: %w", err)
+	}
+	if !active {
+		return queuedTopicView{}, false, nil
+	}
+	return queuedTopicView{Slug: slug, Name: name, Status: "active"}, true, nil
+}
+
 func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, bool, error) {
+	if existing, active, err := a.lookupActiveTopic(ctx, topic); err != nil || active {
+		return existing, active, err
+	}
 	// Resolution and insertion must hold the same writer lock: two distinct
 	// names can otherwise both claim a free slug before either insert completes.
+	// Re-resolve and recheck activity now that the read snapshot is closed.
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return queuedTopicView{}, false, fmt.Errorf("begin topic request: %w", err)

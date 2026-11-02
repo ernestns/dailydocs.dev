@@ -36,10 +36,12 @@ const (
 )
 
 var (
-	ErrRateLimited         = errors.New("topic search rate limited")
-	ErrInsufficientResults = errors.New("not enough useful distinct readings")
-	ErrNoResults           = ErrInsufficientResults
-	ErrInvalidTopic        = topicname.ErrInvalid
+	ErrRateLimited           = errors.New("topic search rate limited")
+	ErrInsufficientResults   = errors.New("not enough useful distinct readings")
+	ErrNoResults             = ErrInsufficientResults
+	ErrInvalidTopic          = topicname.ErrInvalid
+	errDailyLimitReached     = errors.New("daily topic search limit reached")
+	errQueuedTopicIneligible = errors.New("topic no longer eligible for queued search")
 )
 
 type Provider interface {
@@ -186,10 +188,10 @@ func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) 
 	if err := tx.Commit(); err != nil {
 		return Result{}, fmt.Errorf("commit search topic creation: %w", err)
 	}
-	return searchResolvedTopic(ctx, conn, slug, name, opts)
+	return searchResolvedTopic(ctx, conn, slug, name, opts, searchAdmissionPolicy{})
 }
 
-func searchResolvedTopic(ctx context.Context, conn *sql.DB, slug, name string, opts Options) (result Result, err error) {
+func searchResolvedTopic(ctx context.Context, conn *sql.DB, slug, name string, opts Options, admission searchAdmissionPolicy) (result Result, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 	if err := topicname.Validate(name); err != nil {
@@ -233,27 +235,6 @@ func searchResolvedTopic(ctx context.Context, conn *sql.DB, slug, name string, o
 	if err := ExpireStaleRunningSearches(ctx, conn, now); err != nil {
 		return Result{}, err
 	}
-	if limited, err := searchRateLimited(ctx, conn, now, minInterval); err != nil {
-		return Result{}, err
-	} else if limited {
-		runID, runErr := createSearchRun(ctx, conn, topicID, buildQuery(name), runStatusRateLimited, "", now)
-		if runErr != nil {
-			return Result{}, runErr
-		}
-		return Result{
-			TopicID:     topicID,
-			TopicSlug:   slug,
-			TopicName:   name,
-			RunID:       runID,
-			Status:      "rate_limited",
-			RateLimited: true,
-		}, ErrRateLimited
-	}
-
-	if _, err := upsertTopicStatus(ctx, conn, slug, name, "searching"); err != nil {
-		return Result{}, err
-	}
-
 	searchLimit := maxResults
 	if opts.Reviewer != nil {
 		searchLimit = maxResults * 2
@@ -263,9 +244,19 @@ func searchResolvedTopic(ctx context.Context, conn *sql.DB, slug, name string, o
 	if opts.Planner != nil {
 		stage = runStagePlanning
 	}
-	runID, err := createSearchRun(ctx, conn, topicID, summarizeSearchRequests(searchRequests), runStatusRunning, stage, now)
+	runID, limited, err := claimSearchRun(ctx, conn, topicID, slug, name, summarizeSearchRequests(searchRequests), stage, now, minInterval, admission)
 	if err != nil {
 		return Result{}, err
+	}
+	if limited {
+		return Result{
+			TopicID:     topicID,
+			TopicSlug:   slug,
+			TopicName:   name,
+			RunID:       runID,
+			Status:      runStatusRateLimited,
+			RateLimited: true,
+		}, ErrRateLimited
 	}
 	result = Result{TopicID: topicID, TopicSlug: slug, TopicName: name, RunID: runID, Status: runStatusFailed}
 	defer func() {
@@ -322,7 +313,13 @@ func ProcessNextQueuedTopic(ctx context.Context, conn *sql.DB, opts Options) (Qu
 		return QueueResult{}, fmt.Errorf("read next queued topic: %w", err)
 	}
 
-	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts)
+	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts, searchAdmissionPolicy{dailyLimit: dailyLimit, onlyQueued: true})
+	if errors.Is(err, errDailyLimitReached) {
+		return QueueResult{DailyLimitReached: true}, nil
+	}
+	if errors.Is(err, errQueuedTopicIneligible) {
+		return QueueResult{}, nil
+	}
 	return QueueResult{Processed: true, Result: result}, err
 }
 
@@ -362,13 +359,19 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 		}
 	}
 
-	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts)
+	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts, searchAdmissionPolicy{dailyLimit: dailyLimit})
+	if errors.Is(err, errDailyLimitReached) {
+		return QueueResult{DailyLimitReached: true}, nil
+	}
+	if errors.Is(err, errQueuedTopicIneligible) {
+		return QueueResult{}, nil
+	}
 	return QueueResult{Processed: true, Result: result}, err
 }
 
 // DailyLimitReached reports the same UTC-day capacity used by queued generation.
 // It is advisory for the UI; workers must still check it before starting work.
-func DailyLimitReached(ctx context.Context, conn *sql.DB, now time.Time, limit int) (bool, error) {
+func DailyLimitReached(ctx context.Context, conn topicLookup, now time.Time, limit int) (bool, error) {
 	if limit < 1 {
 		return false, nil
 	}
@@ -506,7 +509,81 @@ func currentTime(now func() time.Time) time.Time {
 	return now().UTC()
 }
 
-func searchRateLimited(ctx context.Context, conn *sql.DB, now time.Time, minInterval time.Duration) (bool, error) {
+// The immediate transaction serializes admission across independently opened
+// database handles and processes. No planner or provider runs under this lock.
+func claimSearchRun(ctx context.Context, conn *sql.DB, topicID int64, slug, name, query, stage string, now time.Time, minInterval time.Duration, admission searchAdmissionPolicy) (int64, bool, error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("begin topic search admission: %w", err)
+	}
+	defer tx.Rollback()
+	// Only queued entry points supply a cap. Their earlier read is advisory:
+	// another process may consume the final slot before this writer is acquired.
+	if limited, err := DailyLimitReached(ctx, tx, now, admission.dailyLimit); err != nil {
+		return 0, false, err
+	} else if limited {
+		return 0, false, errDailyLimitReached
+	}
+	if admission.dailyLimit > 0 {
+		eligible, err := queuedSearchEligible(ctx, tx, topicID, admission.onlyQueued)
+		if err != nil {
+			return 0, false, err
+		}
+		if !eligible {
+			return 0, false, errQueuedTopicIneligible
+		}
+	}
+	limited, err := searchRateLimited(ctx, tx, now, minInterval)
+	if err != nil {
+		return 0, false, err
+	}
+	status := runStatusRunning
+	if limited {
+		status, stage, query = runStatusRateLimited, "", buildQuery(name)
+	} else if _, err := upsertTopicStatus(ctx, tx, slug, name, "searching"); err != nil {
+		return 0, false, err
+	}
+	runID, err := createSearchRun(ctx, tx, topicID, query, status, stage, now)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit topic search admission: %w", err)
+	}
+	return runID, limited, nil
+}
+
+// Direct searches use the zero policy. Queued entry points always supply their
+// effective daily cap; selecting the next request additionally requires queued.
+type searchAdmissionPolicy struct {
+	dailyLimit int
+	onlyQueued bool
+}
+
+func queuedSearchEligible(ctx context.Context, tx *sql.Tx, topicID int64, onlyQueued bool) (bool, error) {
+	var status, latestRun string
+	if err := tx.QueryRowContext(ctx, `SELECT status,
+		COALESCE((SELECT status FROM topic_search_runs WHERE topic_id=topics.id ORDER BY id DESC LIMIT 1),'')
+		FROM topics WHERE id=?`, topicID).Scan(&status, &latestRun); err != nil {
+		return false, fmt.Errorf("recheck queued topic eligibility: %w", err)
+	}
+	if status == "queued" {
+		return true, nil
+	}
+	if onlyQueued {
+		return false, nil
+	}
+	if status == "failed" || status == "active" && latestRun == runStatusFailed {
+		return true, nil
+	}
+	if status != "active" {
+		return false, nil
+	}
+	available, err := AvailableReadings(ctx, tx, topicID)
+	return available < MinimumUsefulResults, err
+}
+
+func searchRateLimited(ctx context.Context, conn topicLookup, now time.Time, minInterval time.Duration) (bool, error) {
 	var running int
 	if err := conn.QueryRowContext(ctx, `
 		SELECT COUNT(*)
@@ -601,10 +678,12 @@ func ExpireStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time
 	return nil
 }
 
-func ensureTopic(ctx context.Context, conn interface {
+type topicWriter interface {
 	topicLookup
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, slug string, name string) (int64, error) {
+}
+
+func ensureTopic(ctx context.Context, conn topicWriter, slug string, name string) (int64, error) {
 	_, err := conn.ExecContext(ctx, `
 		INSERT INTO topics (slug, name, status, updated_at)
 		VALUES (?, ?, 'queued', datetime('now'))
@@ -626,7 +705,7 @@ func ensureTopic(ctx context.Context, conn interface {
 	return topicID, nil
 }
 
-func upsertTopicStatus(ctx context.Context, conn *sql.DB, slug string, name string, status string) (int64, error) {
+func upsertTopicStatus(ctx context.Context, conn topicWriter, slug string, name string, status string) (int64, error) {
 	_, err := conn.ExecContext(ctx, `
 		INSERT INTO topics (slug, name, status, updated_at)
 		VALUES (?, ?, ?, datetime('now'))
@@ -649,7 +728,7 @@ func upsertTopicStatus(ctx context.Context, conn *sql.DB, slug string, name stri
 	return topicID, nil
 }
 
-func createSearchRun(ctx context.Context, conn *sql.DB, topicID int64, query string, status string, stage string, now time.Time) (int64, error) {
+func createSearchRun(ctx context.Context, conn topicWriter, topicID int64, query string, status string, stage string, now time.Time) (int64, error) {
 	result, err := conn.ExecContext(ctx, `
 		INSERT INTO topic_search_runs (topic_id, provider, query, status, stage, started_at, completed_at)
 		VALUES (?, 'tavily', ?, ?, ?, ?, CASE WHEN ? != 'running' THEN ? ELSE NULL END)
