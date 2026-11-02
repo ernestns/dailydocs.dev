@@ -47,6 +47,16 @@ sqlite_filename() {
 }
 
 sqlite3 "$DB_PATH" ".backup $(sqlite_filename "$snapshot")"
+# SQLite's backup API copies pages coherently but does not validate their
+# contents. Verify the private snapshot before publishing a recovery point.
+integrity="$(sqlite3 "$snapshot" 'PRAGMA integrity_check;')" || {
+	echo "Backup snapshot integrity check could not complete; backup not published." >&2
+	exit 1
+}
+if [[ "$integrity" != "ok" ]]; then
+	echo "Backup snapshot failed integrity check: $integrity" >&2
+	exit 1
+fi
 gzip -c "$snapshot" >"$archive"
 
 if [[ -e "$BACKUP_PATH" || -L "$BACKUP_PATH" ]]; then

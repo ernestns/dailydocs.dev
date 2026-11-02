@@ -231,11 +231,14 @@ The script prints the completed backup path, named
 restoring. Concurrent backups, including calls within the same second, keep
 separate recovery points.
 
-SQLite creates a coherent snapshot, including committed WAL data. Compression
-runs in a private staging directory on the backup filesystem; the completed
-archive is then published atomically without replacing an existing destination.
-Snapshot, compression, or publication failures preserve earlier backups and
-remove the script's staging files. Archives use mode `0600`, and newly created
+SQLite creates a coherent snapshot, including committed WAL data. The script
+requires that snapshot to pass `PRAGMA integrity_check` before compression;
+corrupt pages or inconsistent indexes stop the backup with a nonzero exit.
+Verification and compression run in a private staging directory on the backup
+filesystem. The completed archive is published atomically without replacing an
+existing destination. Snapshot, verification, compression, or publication failures
+preserve earlier backups and remove the script's staging files. Archives use mode
+`0600`, and newly created
 backup directories use mode `0700` regardless of the caller's umask.
 
 ## Restore SQLite

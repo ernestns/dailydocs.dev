@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -74,6 +75,59 @@ func TestFailedBackupPreservesExistingArchiveAndRemovesStaging(t *testing.T) {
 			f.backup(false, "BACKUP_TEST_FAIL="+stage)
 			if !bytes.Equal(before, f.read(existing)) {
 				t.Fatal("failed backup changed the earlier archive")
+			}
+			f.requireArchiveRows(existing, "checkpointed reading")
+			f.requirePublishedCount(1)
+		})
+	}
+}
+
+func TestBackupRejectsCorruptSnapshotBeforePublication(t *testing.T) {
+	for _, kind := range []string{"invalid index page", "inconsistent index entry"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newBackupFixture(t)
+			f.sql("CREATE INDEX readings_title ON readings(title);")
+			existing := f.backup(true)
+			earlierArchive := f.read(existing)
+			metadata, err := exec.Command(f.sqlite, f.database, "PRAGMA page_size; SELECT rootpage FROM sqlite_master WHERE name='readings_title';").CombinedOutput()
+			if err != nil {
+				t.Fatal("read index fixture location", err, string(metadata))
+			}
+			var pageSize, rootPage int
+			if _, err := fmt.Fscan(strings.NewReader(string(metadata)), &pageSize, &rootPage); err != nil {
+				t.Fatal(err)
+			}
+			damaged := f.read(f.database)
+			offset := (rootPage - 1) * pageSize
+			if rootPage < 2 || pageSize < 1 || offset+pageSize > len(damaged) {
+				t.Fatal("invalid index fixture location", rootPage, pageSize)
+			}
+			indexPage := damaged[offset : offset+pageSize]
+			if kind == "invalid index page" {
+				indexPage[0] = 0xff
+			} else {
+				entry := bytes.Index(indexPage, []byte("checkpointed reading"))
+				if entry < 0 {
+					t.Fatal("index fixture entry not found")
+				}
+				indexPage[entry] = 'x'
+			}
+			if err := os.WriteFile(f.database, damaged, 0600); err != nil {
+				t.Fatal(err)
+			}
+			// The table remains readable. SQLite's backup API copies this damage
+			// without checking either malformed pages or incorrect index entries.
+			f.sql("SELECT title FROM readings NOT INDEXED;")
+			integrity, checkErr := exec.Command(f.sqlite, f.database, "PRAGMA integrity_check;").CombinedOutput()
+			if kind == "invalid index page" && checkErr == nil || kind == "inconsistent index entry" && (checkErr != nil || strings.TrimSpace(string(integrity)) == "ok") {
+				t.Fatal("fixture did not exercise the intended integrity failure", checkErr, string(integrity))
+			}
+			output := f.backup(false)
+			if !strings.Contains(output, "integrity check") {
+				t.Fatal("backup rejection did not explain failed verification", output)
+			}
+			if !bytes.Equal(damaged, f.read(f.database)) || !bytes.Equal(earlierArchive, f.read(existing)) {
+				t.Fatal("rejected backup changed source data or an earlier recovery point")
 			}
 			f.requireArchiveRows(existing, "checkpointed reading")
 			f.requirePublishedCount(1)
@@ -248,6 +302,10 @@ func (f *backupFixture) requireArchiveRows(path string, expected ...string) {
 	snapshot := filepath.Join(f.t.TempDir(), "snapshot.sqlite")
 	if err := os.WriteFile(snapshot, data, 0600); err != nil {
 		f.t.Fatal(err)
+	}
+	integrity, err := exec.Command(f.sqlite, snapshot, "PRAGMA integrity_check;").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(integrity)) != "ok" {
+		f.t.Fatal("published backup failed integrity verification", err, string(integrity))
 	}
 	output, err := exec.Command(f.sqlite, snapshot, "SELECT title FROM readings ORDER BY rowid;").CombinedOutput()
 	if err != nil || strings.TrimSpace(string(output)) != strings.Join(expected, "\n") {
