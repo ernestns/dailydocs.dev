@@ -373,18 +373,19 @@ type evaluationResult struct {
 }
 
 type queuedTopicView struct {
-	Pending        bool
-	RetryBlocked   bool
-	AvailableCount int
-	Message        string
-	InvalidTopic   bool
-	Links          []readingLink
-	Slug           string
-	Name           string
-	Status         string
-	StatusLabel    string
-	CanProcess     bool
-	IsProcessing   bool
+	GenerationPaused bool
+	Pending          bool
+	RetryBlocked     bool
+	AvailableCount   int
+	Message          string
+	InvalidTopic     bool
+	Links            []readingLink
+	Slug             string
+	Name             string
+	Status           string
+	StatusLabel      string
+	CanProcess       bool
+	IsProcessing     bool
 }
 
 func listTopics(ctx context.Context, conn *sql.DB, query string, limit int) ([]topicOption, error) {

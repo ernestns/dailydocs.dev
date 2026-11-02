@@ -280,7 +280,7 @@ func ProcessNextQueuedTopic(ctx context.Context, conn *sql.DB, opts Options) (Qu
 	if dailyLimit < 1 {
 		dailyLimit = DefaultDailyLimit
 	}
-	limited, err := dailyLimitReached(ctx, conn, now, dailyLimit)
+	limited, err := DailyLimitReached(ctx, conn, now, dailyLimit)
 	if err != nil {
 		return QueueResult{}, err
 	}
@@ -313,7 +313,7 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 	if dailyLimit < 1 {
 		dailyLimit = DefaultDailyLimit
 	}
-	limited, err := dailyLimitReached(ctx, conn, now, dailyLimit)
+	limited, err := DailyLimitReached(ctx, conn, now, dailyLimit)
 	if err != nil {
 		return QueueResult{}, err
 	}
@@ -347,10 +347,13 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 	return QueueResult{Processed: true, Result: result}, err
 }
 
-func dailyLimitReached(ctx context.Context, conn *sql.DB, now time.Time, limit int) (bool, error) {
+// DailyLimitReached reports the same UTC-day capacity used by queued generation.
+// It is advisory for the UI; workers must still check it before starting work.
+func DailyLimitReached(ctx context.Context, conn *sql.DB, now time.Time, limit int) (bool, error) {
 	if limit < 1 {
 		return false, nil
 	}
+	now = now.UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	var count int
 	if err := conn.QueryRowContext(ctx, `

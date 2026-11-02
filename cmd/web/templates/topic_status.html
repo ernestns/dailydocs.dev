@@ -3,8 +3,10 @@
   id="topic-status"
   {{if or .Pending .IsProcessing}}data-on-interval__duration.2s="@get('/topics/{{.Slug}}/status')"{{end}}
 >
-  <p class="status">{{.StatusLabel}}</p>
-  {{if .Message}}<p>{{.Message}}</p>{{end}}
+  <div role="status" aria-live="polite" aria-atomic="true">
+    <p class="status">{{.StatusLabel}}</p>
+    {{if .Message}}<p>{{.Message}}</p>{{end}}
+  </div>
   {{if eq .Status "missing"}}
   <p>Request this topic to find documentation worth reading.</p>
   <form method="post" action="/read">
@@ -15,6 +17,8 @@
   <p>The search did not continue for this request.</p>
   {{else if and .Pending (not .IsProcessing)}}
   <p>Your request will update here. Saved readings remain available.</p>
+  {{else if .GenerationPaused}}
+  <p><a href="/{{.Slug}}">Check availability</a></p>
   {{else if eq .Status "active"}}
   {{if ge .AvailableCount 2}}<p>This topic is ready.</p>{{end}}
   <p><a class="button" href="/{{.Slug}}">View reading</a></p>

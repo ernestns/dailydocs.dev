@@ -21,6 +21,7 @@
       margin: 0 0 0.5rem;
       font-size: clamp(2rem, 7vw, 4rem);
       line-height: 1;
+      overflow-wrap: anywhere;
     }
     p {
       margin: 0 0 1.5rem;
@@ -29,9 +30,12 @@
     }
     table {
       width: 100%;
-      margin: 0 0 1.5rem;
       border-collapse: collapse;
       background: #ffffff;
+    }
+    .table-scroll {
+      overflow-x: auto;
+      margin: 0 0 1.5rem;
     }
     th,
     td {
@@ -47,6 +51,24 @@
     }
     a {
       color: #1f2933;
+    }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    nav a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 2.75rem;
+      line-height: 1.5;
+    }
+    a:focus-visible,
+    .table-scroll:focus-visible {
+      outline: 3px solid #486581;
+      outline-offset: 4px;
+      border-radius: 3px;
     }
     .status {
       text-transform: capitalize;
@@ -65,15 +87,21 @@
       {{.Topic.AcceptedCount}} accepted ·
       {{.Topic.EvaluatedCount}} candidates
     </p>
+    <nav aria-label="Topic navigation">
+      <a href="/{{.Topic.Slug}}">View topic</a>
+      <a href="/topics">All topics</a>
+      <a href="/">Home</a>
+    </nav>
     {{if .Results}}
+    <div class="table-scroll" role="region" aria-label="Evaluated pages" tabindex="0">
     <table>
       <thead>
         <tr>
-          <th>Result</th>
-          <th>Decision</th>
-          <th>Score</th>
-          <th>Type</th>
-          <th>Reason</th>
+          <th scope="col">Result</th>
+          <th scope="col">Decision</th>
+          <th scope="col">Score</th>
+          <th scope="col">Type</th>
+          <th scope="col">Reason</th>
         </tr>
       </thead>
       <tbody>
@@ -91,10 +119,10 @@
         {{end}}
       </tbody>
     </table>
+    </div>
     {{else}}
     <p>No evaluated pages yet.</p>
     {{end}}
-    <p><a href="/topics">All topics</a> · <a href="/">Home</a></p>
   </main>
 </body>
 </html>

@@ -114,7 +114,7 @@
         </p>
         <span class="button">Read</span>
       </a>
-      {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing .Feedback.RetryBlocked}}
+      {{if or .Feedback.CanProcess .Feedback.Pending .Feedback.IsProcessing .Feedback.RetryBlocked .Feedback.GenerationPaused}}
       {{template "topic_status" .Feedback}}
       {{end}}
       <nav class="reading-navigation" aria-label="Reading navigation">

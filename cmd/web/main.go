@@ -27,17 +27,21 @@ type app struct {
 	searchPlanner   topicsearch.Planner
 	searchReviewer  topicsearch.Reviewer
 	asyncProcessing bool
+	searchLifecycle *topicSearchLifecycle
 }
 
 func main() {
+	if err := run(); err != nil {
+		log.Printf("DailyDocs stopped: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx := context.Background()
 
 	if len(os.Args) > 1 {
-		if err := runCommand(ctx, os.Args[1:]); err != nil {
-			log.Printf("command failed: %v", err)
-			os.Exit(1)
-		}
-		return
+		return runCommand(ctx, os.Args[1:])
 	}
 
 	addr := os.Getenv("ADDR")
@@ -48,8 +52,7 @@ func main() {
 	dbPath := os.Getenv("DB_PATH")
 	conn, err := db.Open(ctx, dbPath)
 	if err != nil {
-		log.Printf("database startup failed: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("database startup failed: %w", err)
 	}
 	defer conn.Close()
 
@@ -71,6 +74,14 @@ func main() {
 	}
 	searchPlanner := openAIPlannerFromEnv()
 	searchReviewer := openAIReviewerFromEnv()
+	searchLifecycle := newTopicSearchLifecycle()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := searchLifecycle.wait(cleanup); err != nil {
+			log.Printf("topic search shutdown did not complete: %v", err)
+		}
+	}()
 
 	app := app{
 		db:              conn,
@@ -81,6 +92,7 @@ func main() {
 		searchPlanner:   searchPlanner,
 		searchReviewer:  searchReviewer,
 		asyncProcessing: true,
+		searchLifecycle: searchLifecycle,
 	}
 
 	mux := http.NewServeMux()
@@ -106,31 +118,38 @@ func main() {
 
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(shutdown)
 
 	select {
 	case err := <-errs:
 		if err != nil && err != http.ErrServerClosed {
-			log.Printf("server failed: %v", err)
-			os.Exit(1)
+			return fmt.Errorf("server failed: %w", err)
 		}
 	case sig := <-shutdown:
 		log.Printf("shutdown signal received signal=%s", sig.String())
+		searchLifecycle.stop()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("server shutdown failed: %v", err)
-			os.Exit(1)
+			return fmt.Errorf("server shutdown failed: %w", err)
 		}
 	}
+	return nil
 }
 
 func (a app) processQueuedTopic(ctx context.Context, slug string) {
 	if a.searchProvider == nil {
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	if a.searchMu != nil {
 		a.searchMu.Lock()
 		defer a.searchMu.Unlock()
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	opts := topicsearch.Options{
 		Provider:    a.searchProvider,
@@ -160,14 +179,24 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 	if a.searchProvider == nil {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	jobCtx, finished, admitted := a.searchLifecycle.admit()
+	if !admitted {
+		return false
+	}
+	background := false
+	defer func() {
+		if !background {
+			finished()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(jobCtx, 5*time.Second)
 	defer cancel()
 	if err := topicsearch.ExpireStaleRunningSearches(ctx, a.db, a.now()); err != nil {
 		log.Printf("expire stale topic searches failed: %v", err)
 		return false
 	}
 	if !a.asyncProcessing {
-		a.processQueuedTopic(context.Background(), slug)
+		a.processQueuedTopic(jobCtx, slug)
 		return true
 	}
 	if a.pendingSearches != nil {
@@ -175,12 +204,14 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 			return false
 		}
 	}
+	background = true
 	go func() {
+		defer finished()
 		if a.pendingSearches != nil {
 			defer a.pendingSearches.Delete(slug)
 		}
 		// The generation deadline starts after this job acquires the worker.
-		a.processQueuedTopic(context.Background(), slug)
+		a.processQueuedTopic(jobCtx, slug)
 	}()
 	return true
 }

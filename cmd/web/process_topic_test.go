@@ -18,7 +18,7 @@ func TestQueuedTopicPageShowsProcessButton(t *testing.T) {
 	defer conn.Close()
 	seedQueuedWebTopic(t, ctx, conn, "rust", "Rust")
 
-	handler := newTestHandler(conn)
+	handler := newTestHandlerWithProvider(conn, &quantityProvider{count: 3})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
 
@@ -39,7 +39,7 @@ func TestFailedTopicPageShowsProcessButton(t *testing.T) {
 	defer conn.Close()
 	seedWebTopic(t, ctx, conn, "rust", "Rust", "failed")
 
-	handler := newTestHandler(conn)
+	handler := newTestHandlerWithProvider(conn, &quantityProvider{count: 3})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
 
@@ -66,7 +66,7 @@ func TestStaleSearchingTopicPageShowsProcessButton(t *testing.T) {
 		t.Fatalf("seed stale run: %v", err)
 	}
 
-	handler := newTestHandler(conn)
+	handler := newTestHandlerWithProvider(conn, &quantityProvider{count: 3})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/rust", nil))
 

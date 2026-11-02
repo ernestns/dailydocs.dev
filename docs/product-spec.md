@@ -181,7 +181,20 @@ When a missing topic is explicitly requested with POST `/read`:
 
 **Process topic** is available for eligible queued or failed topics, catalogs below the useful-reading minimum, and active catalogs whose latest attempt failed. A failed attempt can coexist with an active catalog when enough useful readings survive; it still offers an explicit retry.
 
+When generation is not configured or the daily capacity is exhausted, the status
+page explains the pause instead of offering a process action that cannot run.
+Daily-limit feedback names the next UTC midnight; refreshing then restores the
+explicit retry action. Existing readings and saved requests remain available.
+Workers recheck capacity after waiting, so a request admitted earlier cannot
+bypass a limit reached while it was waiting.
+
 Queued means saved, not automatically scheduled; the application has no background queue pump. Only explicitly submitted asynchronous work is tracked in memory per topic, suppressing duplicate pending jobs. While waiting for the single worker, its status panel says **Waiting for worker** without changing the stored topic/run status. Redirected pages, saved reading pages, and status GETs continue polling pending or running work and stop when it finishes. These GETs do not create topics, enqueue jobs, or call providers.
+
+Graceful service shutdown closes generation admission and cancels current work,
+allowing up to 20 seconds for failure and partial-result persistence before
+closing SQLite. Waiting requests remain saved without starting provider calls.
+Completed cleanup permits immediate explicit retries after restart; abrupt
+termination retains the existing stale-run protection.
 
 Default processing limits for the public and CLI generation paths:
 

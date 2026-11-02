@@ -114,7 +114,7 @@ func TestQueuedStatusPollsOnlySubmittedWork(t *testing.T) {
 		}
 	}
 	checkPolling(false)
-	for range topicProcessingDailyLimit {
+	for range topicProcessingDailyLimit - 1 {
 		if _, err := conn.Exec(`INSERT INTO topic_search_runs(topic_id,provider,query,status,started_at) SELECT id,'fake','prior attempt','failed',? FROM topics WHERE slug='rust'`, time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
 			t.Fatal(err)
 		}
@@ -128,6 +128,11 @@ func TestQueuedStatusPollsOnlySubmittedWork(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	checkPolling(true)
+	// Capacity can be consumed after admission, while this request is waiting.
+	// The worker must recheck the limit and clear pending state without spending.
+	if _, err := conn.Exec(`INSERT INTO topic_search_runs(topic_id,provider,query,status,started_at) SELECT id,'fake','another attempt','failed',? FROM topics WHERE slug='rust'`, time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
+		t.Fatal(err)
+	}
 	release.Do(a.searchMu.Unlock)
 	deadline := time.Now().Add(time.Second)
 	for {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ernestns/daily-docs/internal/topicname"
 	"github.com/ernestns/daily-docs/internal/topicsearch"
@@ -79,6 +80,28 @@ func (a app) loadTopicStatus(ctx context.Context, slug string) (queuedTopicView,
 	if topic.Pending && !topic.IsProcessing {
 		topic.StatusLabel = "Waiting for worker"
 		topic.Message = "This explicit request is waiting for the current worker. The daily limit is checked before generation starts."
+	}
+	if topic.CanProcess {
+		if a.searchProvider == nil {
+			topic.GenerationPaused = true
+			topic.StatusLabel = "Generation temporarily unavailable"
+			topic.Message = "Your request is saved. Topic generation is temporarily unavailable; check back later. Existing readings remain available."
+		} else {
+			now := a.now().UTC()
+			limited, err := topicsearch.DailyLimitReached(ctx, a.db, now, topicProcessingDailyLimit)
+			if err != nil {
+				return topic, err
+			}
+			if limited {
+				topic.GenerationPaused = true
+				topic.StatusLabel = "Daily limit reached"
+				reset := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+				topic.Message = fmt.Sprintf("DailyDocs has reached today's limit of %d topic searches. Try again after %s. Saved requests are not processed automatically; existing readings remain available.", topicProcessingDailyLimit, reset.Format("2006-01-02 15:04 MST"))
+			}
+		}
+		if topic.GenerationPaused {
+			topic.CanProcess = false
+		}
 	}
 	return topic, nil
 }

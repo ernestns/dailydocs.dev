@@ -21,6 +21,8 @@
     }
     section {
       width: min(42rem, 100%);
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
     .status {
       margin: 0 0 0.5rem;
@@ -56,6 +58,12 @@
     }
     a {
       color: #1f2933;
+    }
+    a:focus-visible,
+    button:focus-visible {
+      outline: 3px solid #486581;
+      outline-offset: 4px;
+      border-radius: 3px;
     }
   </style>
 </head>
