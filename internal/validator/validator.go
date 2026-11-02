@@ -15,6 +15,7 @@ type Result struct {
 	Healthy  int
 	Failed   int
 	Disabled int
+	Skipped  int
 }
 
 type pageLink struct {
@@ -40,9 +41,13 @@ func ValidateLinks(ctx context.Context, conn *sql.DB, client *http.Client, failu
 		result.Checked++
 		finalURL, err := checkURL(ctx, client, page.URL)
 		if err != nil {
-			disabled, recordErr := recordFailure(ctx, conn, page.ID, err, failureThreshold)
+			applied, disabled, recordErr := recordFailure(ctx, conn, page, err, failureThreshold)
 			if recordErr != nil {
 				return result, recordErr
+			}
+			if !applied {
+				result.Skipped++
+				continue
 			}
 			result.Failed++
 			if disabled {
@@ -51,8 +56,13 @@ func ValidateLinks(ctx context.Context, conn *sql.DB, client *http.Client, failu
 			continue
 		}
 
-		if err := recordSuccess(ctx, conn, page.ID, finalURL); err != nil {
+		applied, err := recordSuccess(ctx, conn, page, finalURL)
+		if err != nil {
 			return result, err
+		}
+		if !applied {
+			result.Skipped++
+			continue
 		}
 		result.Healthy++
 	}
@@ -118,10 +128,11 @@ func requestURL(ctx context.Context, client *http.Client, method string, rawURL 
 	return resp.StatusCode, resp.Request.URL.String(), nil
 }
 
-func recordSuccess(ctx context.Context, conn *sql.DB, pageID int64, finalURL string) error {
+func recordSuccess(ctx context.Context, conn *sql.DB, page pageLink, finalURL string) (bool, error) {
 	// A redirect may lead to another saved page in this topic. Keep the working
 	// alias in that case: merging/deleting rows would change reading history.
-	_, err := conn.ExecContext(ctx, `
+	// The checked URL may have changed while the HTTP request was in flight.
+	result, err := conn.ExecContext(ctx, `
 		UPDATE pages AS current
 		SET
 			url = CASE WHEN EXISTS (
@@ -133,51 +144,62 @@ func recordSuccess(ctx context.Context, conn *sql.DB, pageID int64, finalURL str
 			verification_failures = 0,
 			last_error = '',
 			updated_at = datetime('now')
-		WHERE id = ?
-	`, finalURL, finalURL, pageID)
+		WHERE id = ? AND url = ? AND active = 1
+	`, finalURL, finalURL, page.ID, page.URL)
 	if err != nil {
-		return fmt.Errorf("record link success: %w", err)
+		return false, fmt.Errorf("record link success: %w", err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read link success update count: %w", err)
+	}
+	return rows != 0, nil
 }
 
-func recordFailure(ctx context.Context, conn *sql.DB, pageID int64, linkErr error, failureThreshold int) (bool, error) {
+func recordFailure(ctx context.Context, conn *sql.DB, page pageLink, linkErr error, failureThreshold int) (applied, disabled bool, err error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin link failure update: %w", err)
+		return false, false, fmt.Errorf("begin link failure update: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback()
 	}()
 
-	_, err = tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE pages
 		SET
 			last_verified = datetime('now'),
 			verification_failures = verification_failures + 1,
 			last_error = ?,
 			updated_at = datetime('now')
-		WHERE id = ?
-	`, linkErr.Error(), pageID)
+		WHERE id = ? AND url = ? AND active = 1
+	`, linkErr.Error(), page.ID, page.URL)
 	if err != nil {
-		return false, fmt.Errorf("record link failure: %w", err)
+		return false, false, fmt.Errorf("record link failure: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, false, fmt.Errorf("read link failure update count: %w", err)
+	}
+	if rows == 0 {
+		return false, false, nil
 	}
 
 	var failures int
-	if err := tx.QueryRowContext(ctx, "SELECT verification_failures FROM pages WHERE id = ?", pageID).Scan(&failures); err != nil {
-		return false, fmt.Errorf("read link failure count: %w", err)
+	if err := tx.QueryRowContext(ctx, "SELECT verification_failures FROM pages WHERE id = ?", page.ID).Scan(&failures); err != nil {
+		return false, false, fmt.Errorf("read link failure count: %w", err)
 	}
 
-	disabled := failures >= failureThreshold
+	disabled = failures >= failureThreshold
 	if disabled {
-		if _, err := tx.ExecContext(ctx, "UPDATE pages SET active = 0, updated_at = datetime('now') WHERE id = ?", pageID); err != nil {
-			return false, fmt.Errorf("disable failed link: %w", err)
+		if _, err := tx.ExecContext(ctx, "UPDATE pages SET active = 0, updated_at = datetime('now') WHERE id = ?", page.ID); err != nil {
+			return false, false, fmt.Errorf("disable failed link: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit link failure update: %w", err)
+		return false, false, fmt.Errorf("commit link failure update: %w", err)
 	}
 
-	return disabled, nil
+	return true, disabled, nil
 }

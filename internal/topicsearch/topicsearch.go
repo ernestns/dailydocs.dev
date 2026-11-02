@@ -337,10 +337,12 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 		return QueueResult{DailyLimitReached: true}, nil
 	}
 
+	// Rejected admission is an audit event, not a generation attempt. It must
+	// not hide the failed attempt that makes an existing catalog retryable.
 	var topic, status, latestRun string
 	var topicID int64
 	err = conn.QueryRowContext(ctx, `
-        SELECT id,name,status,COALESCE((SELECT status FROM topic_search_runs WHERE topic_id=topics.id ORDER BY id DESC LIMIT 1),'')
+        SELECT id,name,status,COALESCE((SELECT status FROM topic_search_runs WHERE topic_id=topics.id AND status!='rate_limited' ORDER BY id DESC LIMIT 1),'')
         FROM topics WHERE slug=? AND status IN ('queued','failed','active')
     `, slug).Scan(&topicID, &topic, &status, &latestRun)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -563,7 +565,7 @@ type searchAdmissionPolicy struct {
 func queuedSearchEligible(ctx context.Context, tx *sql.Tx, topicID int64, onlyQueued bool) (bool, error) {
 	var status, latestRun string
 	if err := tx.QueryRowContext(ctx, `SELECT status,
-		COALESCE((SELECT status FROM topic_search_runs WHERE topic_id=topics.id ORDER BY id DESC LIMIT 1),'')
+		COALESCE((SELECT status FROM topic_search_runs WHERE topic_id=topics.id AND status!='rate_limited' ORDER BY id DESC LIMIT 1),'')
 		FROM topics WHERE id=?`, topicID).Scan(&status, &latestRun); err != nil {
 		return false, fmt.Errorf("recheck queued topic eligibility: %w", err)
 	}

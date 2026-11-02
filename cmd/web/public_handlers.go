@@ -484,14 +484,14 @@ func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topic
 			COALESCE((
 				SELECT sr.status
 				FROM topic_search_runs sr
-				WHERE sr.topic_id = t.id
+				WHERE sr.topic_id = t.id AND sr.status != 'rate_limited'
 				ORDER BY sr.started_at DESC, sr.id DESC
 				LIMIT 1
 			), ''),
 			COALESCE((
 				SELECT sr.stage
 				FROM topic_search_runs sr
-				WHERE sr.topic_id = t.id
+				WHERE sr.topic_id = t.id AND sr.status != 'rate_limited'
 				ORDER BY sr.started_at DESC, sr.id DESC
 				LIMIT 1
 			), '')
@@ -666,14 +666,14 @@ func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string, pending boo
 			COALESCE((
 				SELECT sr.status
 				FROM topic_search_runs sr
-				WHERE sr.topic_id = t.id
+				WHERE sr.topic_id = t.id AND sr.status != 'rate_limited'
 				ORDER BY sr.started_at DESC, sr.id DESC
 				LIMIT 1
 			), ''),
 			COALESCE((
 				SELECT sr.stage
 				FROM topic_search_runs sr
-				WHERE sr.topic_id = t.id
+				WHERE sr.topic_id = t.id AND sr.status != 'rate_limited'
 				ORDER BY sr.started_at DESC, sr.id DESC
 				LIMIT 1
 			), ''),

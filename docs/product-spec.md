@@ -198,6 +198,12 @@ When a missing topic is explicitly requested with POST `/read`:
 
 **Process topic** is available for eligible queued or failed topics, catalogs below the useful-reading minimum, and active catalogs whose latest attempt failed. A failed attempt can coexist with an active catalog when enough useful readings survive; it still offers an explicit retry.
 
+A rate-limited request remains in the audit history but does not replace the
+latest actual generation attempt in feedback or retry eligibility. An eligible
+failed attempt remains retryable after capacity becomes available, until a later
+actual attempt supersedes it. A catalog with no available pages offers
+processing recovery without a **View reading** link back to the same empty page.
+
 When generation is not configured or the daily capacity is exhausted, the status
 page explains the pause instead of offering a process action that cannot run.
 Daily-limit feedback names the next UTC midnight; refreshing then restores the
@@ -357,6 +363,10 @@ Broken links should never appear in new recommendations.
 If a healthy redirect resolves to another saved URL in the same topic, the
 validator keeps the original working alias and both page IDs, resets its failure
 count, and continues validation. It does not merge or delete historical rows.
+
+Validation results apply only while the page remains active at the URL that was
+checked. Results for changed, disabled, or removed pages are counted as skipped;
+they do not overwrite newer destinations or stop validation of remaining pages.
 
 ## Architecture
 

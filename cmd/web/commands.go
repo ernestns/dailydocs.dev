@@ -51,7 +51,7 @@ func runCommand(ctx context.Context, args []string) error {
 			return err
 		}
 
-		log.Printf("validated links checked=%d healthy=%d failed=%d disabled=%d", result.Checked, result.Healthy, result.Failed, result.Disabled)
+		log.Printf("validated links checked=%d healthy=%d failed=%d disabled=%d skipped=%d", result.Checked, result.Healthy, result.Failed, result.Disabled, result.Skipped)
 		return nil
 	case "search-topic":
 		if len(args) != 2 {

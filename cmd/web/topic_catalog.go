@@ -130,8 +130,8 @@ func listRequestedTopics(ctx context.Context, conn *sql.DB, filter topicCatalogF
    LIMIT ? OFFSET ?
   )
   SELECT t.id,t.slug,t.name,t.status,
-   COALESCE((SELECT sr.status FROM topic_search_runs sr WHERE sr.topic_id=t.id ORDER BY sr.started_at DESC,sr.id DESC LIMIT 1),''),
-   COALESCE((SELECT sr.stage FROM topic_search_runs sr WHERE sr.topic_id=t.id ORDER BY sr.started_at DESC,sr.id DESC LIMIT 1),''),
+   COALESCE((SELECT sr.status FROM topic_search_runs sr WHERE sr.topic_id=t.id AND sr.status!='rate_limited' ORDER BY sr.started_at DESC,sr.id DESC LIMIT 1),''),
+   COALESCE((SELECT sr.stage FROM topic_search_runs sr WHERE sr.topic_id=t.id AND sr.status!='rate_limited' ORDER BY sr.started_at DESC,sr.id DESC LIMIT 1),''),
    (SELECT COUNT(*) FROM topic_search_results r WHERE r.topic_id=t.id),
    (SELECT COUNT(*) FROM topic_search_results r WHERE r.topic_id=t.id AND r.accepted=1)
   FROM selected t

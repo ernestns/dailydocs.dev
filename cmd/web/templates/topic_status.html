@@ -23,7 +23,7 @@
   <p><a href="/{{.Slug}}">Check availability</a></p>
   {{else if eq .Status "active"}}
   {{if ge .AvailableCount 2}}<p>This topic is ready.</p>{{end}}
-  <p><a class="button" href="/{{.Slug}}">View reading</a></p>
+  {{if gt .AvailableCount 0}}<p><a class="button" href="/{{.Slug}}">View reading</a></p>{{end}}
   {{else if .IsProcessing}}
   <p>This topic is being processed. Results will appear when they are ready.</p>
   {{else if .RetryBlocked}}

@@ -20,7 +20,7 @@ func addTopicFeedback(ctx context.Context, conn *sql.DB, topicID int64, runStatu
 	}
 	topic.AvailableCount = count
 	var diagnostic string
-	if err := conn.QueryRowContext(ctx, "SELECT COALESCE((SELECT error FROM topic_search_runs WHERE topic_id=? ORDER BY id DESC LIMIT 1),'')", topicID).Scan(&diagnostic); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT COALESCE((SELECT error FROM topic_search_runs WHERE topic_id=? AND status!='rate_limited' ORDER BY id DESC LIMIT 1),'')", topicID).Scan(&diagnostic); err != nil {
 		return err
 	}
 	topic.InvalidTopic = strings.HasPrefix(diagnostic, topicname.ErrInvalid.Error()) || topicname.Validate(topic.Name) != nil
