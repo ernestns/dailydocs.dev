@@ -198,9 +198,19 @@ When a missing topic is explicitly requested with POST `/read`:
 
 **Process topic** is available for eligible queued or failed topics, catalogs below the useful-reading minimum, and active catalogs whose latest attempt failed. A failed attempt can coexist with an active catalog when enough useful readings survive; it still offers an explicit retry.
 
-The enhanced **Process topic** form disables automatic transport retries, so a
-lost response cannot silently submit another generation request. Refreshing the
-topic checks its latest status; another attempt requires an explicit submission.
+The enhanced **Process topic** form disables Datastar's automatic retries. A
+failed HTTP request or interrupted response shows a **Check topic status** link;
+following it checks the latest state without submitting another request.
+
+Every rendered **Process topic** form also carries the latest observed search-run
+ID, including rate-limited attempts. The worker checks that revision in the same
+transaction that reserves a search run. Repeating an old form after a newer run
+exists returns current status without starting another search, including when
+the browser's network layer repeats a POST after a lost response. A freshly
+rendered form permits an intentional retry. This applies to enhanced forms and
+their native POST fallback; legacy callers that omit the revision retain their
+existing behavior. The revision is a duplicate-submission guard, not an
+authentication or authorization token.
 
 A rate-limited request remains in the audit history but does not replace the
 latest actual generation attempt in feedback or retry eligibility. An eligible

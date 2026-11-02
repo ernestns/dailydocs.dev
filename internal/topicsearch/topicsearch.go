@@ -118,6 +118,9 @@ type ReviewOutput struct {
 }
 
 type Options struct {
+	// ExpectedRunID optionally conditions named queued processing on the latest
+	// observed run, including rejected admissions. Direct searches ignore it.
+	ExpectedRunID              *int64
 	Provider                   Provider
 	Planner                    Planner
 	Reviewer                   Reviewer
@@ -361,7 +364,7 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 		}
 	}
 
-	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts, searchAdmissionPolicy{dailyLimit: dailyLimit})
+	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts, searchAdmissionPolicy{dailyLimit: dailyLimit, expectedRunID: opts.ExpectedRunID})
 	if errors.Is(err, errDailyLimitReached) {
 		return QueueResult{DailyLimitReached: true}, nil
 	}
@@ -519,6 +522,17 @@ func claimSearchRun(ctx context.Context, conn *sql.DB, topicID int64, slug, name
 		return 0, false, fmt.Errorf("begin topic search admission: %w", err)
 	}
 	defer tx.Rollback()
+	if admission.expectedRunID != nil {
+		var latest int64
+		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(id),0) FROM topic_search_runs WHERE topic_id=?", topicID).Scan(&latest); err != nil {
+			return 0, false, fmt.Errorf("check observed topic search revision: %w", err)
+		}
+		if latest != *admission.expectedRunID {
+			// A replay or stale form may arrive after the prior job has already
+			// finished. Do not create another attempt or rate-limit audit row.
+			return 0, false, errQueuedTopicIneligible
+		}
+	}
 	// Only queued entry points supply a cap. Their earlier read is advisory:
 	// another process may consume the final slot before this writer is acquired.
 	if limited, err := DailyLimitReached(ctx, tx, now, admission.dailyLimit); err != nil {
@@ -558,8 +572,9 @@ func claimSearchRun(ctx context.Context, conn *sql.DB, topicID int64, slug, name
 // Direct searches use the zero policy. Queued entry points always supply their
 // effective daily cap; selecting the next request additionally requires queued.
 type searchAdmissionPolicy struct {
-	dailyLimit int
-	onlyQueued bool
+	dailyLimit    int
+	onlyQueued    bool
+	expectedRunID *int64
 }
 
 func queuedSearchEligible(ctx context.Context, tx *sql.Tx, topicID int64, onlyQueued bool) (bool, error) {

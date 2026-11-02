@@ -140,6 +140,10 @@ func run() error {
 }
 
 func (a app) processQueuedTopic(ctx context.Context, slug string) {
+	a.processQueuedTopicWithRevision(ctx, slug, nil)
+}
+
+func (a app) processQueuedTopicWithRevision(ctx context.Context, slug string, expectedRunID *int64) {
 	if a.searchProvider == nil {
 		return
 	}
@@ -154,12 +158,13 @@ func (a app) processQueuedTopic(ctx context.Context, slug string) {
 		return
 	}
 	opts := topicsearch.Options{
-		Provider:    a.searchProvider,
-		Planner:     a.searchPlanner,
-		Reviewer:    a.searchReviewer,
-		Now:         a.now,
-		MinInterval: time.Nanosecond,
-		DailyLimit:  topicProcessingDailyLimit,
+		ExpectedRunID: expectedRunID,
+		Provider:      a.searchProvider,
+		Planner:       a.searchPlanner,
+		Reviewer:      a.searchReviewer,
+		Now:           a.now,
+		MinInterval:   time.Nanosecond,
+		DailyLimit:    topicProcessingDailyLimit,
 	}
 	result, err := topicsearch.ProcessQueuedTopic(ctx, a.db, slug, opts)
 	if err != nil {
@@ -178,6 +183,10 @@ func (a app) processQueuedTopic(ctx context.Context, slug string) {
 }
 
 func (a app) processQueuedTopicAsync(slug string) bool {
+	return a.processQueuedTopicAsyncWithRevision(slug, nil)
+}
+
+func (a app) processQueuedTopicAsyncWithRevision(slug string, expectedRunID *int64) bool {
 	if a.searchProvider == nil {
 		return false
 	}
@@ -198,7 +207,7 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 		return false
 	}
 	if !a.asyncProcessing {
-		a.processQueuedTopic(jobCtx, slug)
+		a.processQueuedTopicWithRevision(jobCtx, slug, expectedRunID)
 		return true
 	}
 	if a.pendingSearches != nil {
@@ -213,7 +222,7 @@ func (a app) processQueuedTopicAsync(slug string) bool {
 			defer a.pendingSearches.Delete(slug)
 		}
 		// The generation deadline starts after this job acquires the worker.
-		a.processQueuedTopic(jobCtx, slug)
+		a.processQueuedTopicWithRevision(jobCtx, slug, expectedRunID)
 	}()
 	return true
 }

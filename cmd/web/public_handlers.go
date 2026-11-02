@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -226,6 +227,33 @@ func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid process request", http.StatusBadRequest)
+		return
+	}
+	// Support URL-encoded and multipart forms. Parse both before inspecting
+	// the optional revision, without relying on
+	// another middleware or FormValue call to initialize multipart fields.
+	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		http.Error(w, "invalid process request", http.StatusBadRequest)
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	var expectedRunID *int64
+	if values, present := r.Form["expected_run_id"]; present {
+		if len(values) != 1 || values[0] == "" || strings.IndexFunc(values[0], func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			http.Error(w, "invalid expected run id", http.StatusBadRequest)
+			return
+		}
+		value, err := strconv.ParseInt(values[0], 10, 64)
+		if err != nil {
+			http.Error(w, "invalid expected run id", http.StatusBadRequest)
+			return
+		}
+		expectedRunID = &value
+	}
 
 	slug := strings.TrimSpace(r.FormValue("topic"))
 	if !topicname.IsSlug(slug) {
@@ -250,8 +278,8 @@ func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 		renderBlockedTopicRetry(w, r, queued)
 		return
 	}
-	if queued.CanProcess {
-		a.processQueuedTopicAsync(slug)
+	if queued.CanProcess && (expectedRunID == nil || *expectedRunID == queued.LatestRunID) {
+		a.processQueuedTopicAsyncWithRevision(slug, expectedRunID)
 	}
 	if isDatastarRequest(r) {
 		a.renderTopicStatus(w, r, slug)
@@ -408,6 +436,7 @@ type evaluationResult struct {
 }
 
 type queuedTopicView struct {
+	LatestRunID      int64
 	GenerationPaused bool
 	Pending          bool
 	RetryBlocked     bool
@@ -663,6 +692,7 @@ func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string, pending boo
 			t.slug,
 			t.name,
 			t.status,
+			COALESCE((SELECT MAX(sr.id) FROM topic_search_runs sr WHERE sr.topic_id=t.id),0),
 			COALESCE((
 				SELECT sr.status
 				FROM topic_search_runs sr
@@ -683,7 +713,7 @@ func loadQueuedTopic(ctx context.Context, conn *sql.DB, slug string, pending boo
 			)
 		FROM topics t
 		WHERE t.slug = ?
-	`, now.UTC().Add(-topicsearch.StaleRunTimeout).Format("2006-01-02 15:04:05"), slug).Scan(&queued.Slug, &queued.Name, &queued.Status, &runStatus, &runStage, &running)
+	`, now.UTC().Add(-topicsearch.StaleRunTimeout).Format("2006-01-02 15:04:05"), slug).Scan(&queued.Slug, &queued.Name, &queued.Status, &queued.LatestRunID, &runStatus, &runStage, &running)
 	if err != nil {
 		return queuedTopicView{}, fmt.Errorf("load queued topic: %w", err)
 	}
