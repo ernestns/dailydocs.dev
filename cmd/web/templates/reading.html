@@ -64,14 +64,21 @@
       font-size: 0.85rem;
       color: #1f2933;
     }
-    .button {
+    .button,
+    button {
       display: inline-block;
+      min-height: 2.75rem;
       padding: 0.75rem 1rem;
+      border: 0;
       border-radius: 6px;
+      box-sizing: border-box;
+      font: inherit;
       color: #ffffff;
       background: #1f2933;
       text-decoration: none;
     }
+    button { cursor: pointer; }
+    #topic-status { margin-top: 1.5rem; }
     .reading-navigation {
       display: flex;
       flex-wrap: wrap;
@@ -85,7 +92,8 @@
       color: #52606d;
       line-height: 1.5;
     }
-    a:focus-visible {
+    a:focus-visible,
+    button:focus-visible {
       outline: 3px solid #486581;
       outline-offset: 4px;
       border-radius: 3px;

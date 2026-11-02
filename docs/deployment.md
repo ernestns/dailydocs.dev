@@ -105,15 +105,36 @@ Override defaults with environment variables:
 REMOTE=dailydocs-vps REPO_DIR=/home/deploy/daily-docs BRANCH=main ./scripts/deploy-remote.sh
 ```
 
-The deploy script runs the usual manual sequence on the VPS:
+To require the reviewed commit you just pushed, pass its full commit ID:
+
+```sh
+EXPECTED_COMMIT="$(git rev-parse HEAD)" REMOTE=dailydocs-vps REPO_DIR=/home/deploy/daily-docs ./scripts/deploy-remote.sh
+```
+
+The deploy script requires a clean deployment checkout, including untracked
+files. Ignored local configuration, databases, and build outputs remain allowed.
+It fetches the requested branch once, resolves that fetch to a fixed commit,
+and stops if `EXPECTED_COMMIT` is provided and does not match. Local commits
+absent from the fetched revision also stop deployment; reconcile them without
+discarding work before trying again.
+
+The deployment sequence on the VPS is:
 
 ```text
+require clean checkout
 git fetch
-git pull --ff-only
+verify optional EXPECTED_COMMIT
+fast-forward to the fetched commit
 ./scripts/build.sh
+verify clean checkout and exact commit again
 sudo /usr/local/bin/dailydocs-install
 curl /health
 ```
+
+The script never resets or force-updates a local branch. Changes made to source
+or `HEAD` during the build prevent installation. Deployment guard tests use
+temporary Git repositories and a local SSH fixture in `go test ./...`, so they
+also run through `just check` without contacting a host.
 
 ## Run Locally
 

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reading unavailable - DailyDocs</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1f2933;
+      background: #f7f8fa;
+    }
+    main {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 2rem;
+      box-sizing: border-box;
+    }
+    section {
+      width: min(42rem, 100%);
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    h1 {
+      margin: 0 0 1rem;
+      font-size: clamp(2.25rem, 7vw, 4.5rem);
+      line-height: 1.1;
+    }
+    p {
+      margin: 0 0 1.5rem;
+      color: #52606d;
+      font-size: 1.05rem;
+      line-height: 1.6;
+    }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 1.25rem;
+    }
+    a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 2.75rem;
+      color: #52606d;
+      line-height: 1.5;
+      box-sizing: border-box;
+    }
+    a.button {
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      color: #ffffff;
+      background: #1f2933;
+      text-decoration: none;
+    }
+    a:focus-visible {
+      outline: 3px solid #486581;
+      outline-offset: 4px;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      {{if .InvalidDate}}
+      <h1>Check the reading date</h1>
+      <p>Use a valid date in YYYY-MM-DD format, then try the link again.</p>
+      {{else}}
+      <h1>No saved reading for this date</h1>
+      <p>There is no saved reading for this topic on <time datetime="{{.Date}}">{{.Date}}</time>.</p>
+      {{end}}
+      <nav aria-label="Reading recovery">
+        <a class="button" href="/{{.TopicSlug}}">Today's reading</a>
+        <a href="/">Search another topic</a>
+      </nav>
+    </section>
+  </main>
+</body>
+</html>

@@ -52,14 +52,14 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, reading.ErrTopicNotFound), errors.Is(err, reading.ErrNoActivePages):
 			if !createOnMissing {
-				http.NotFound(w, r)
+				renderReadingUnavailable(w, topic, date, false)
 				return
 			}
 			a.handleMissingTopic(w, r, topic)
 		case errors.Is(err, reading.ErrReadingNotFound):
-			http.NotFound(w, r)
+			renderReadingUnavailable(w, topic, date, false)
 		case errors.Is(err, reading.ErrInvalidDate):
-			http.Error(w, "invalid date", http.StatusBadRequest)
+			renderReadingUnavailable(w, topic, "", true)
 		default:
 			log.Printf("reading page failed: %v", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -75,6 +75,20 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 		reading.Reading
 		Feedback queuedTopicView
 	}{dailyReading, feedback})
+}
+
+func renderReadingUnavailable(w http.ResponseWriter, topic, date string, invalidDate bool) {
+	status := http.StatusNotFound
+	if invalidDate {
+		status = http.StatusBadRequest
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	renderTemplate(w, readingUnavailableTemplate, struct {
+		TopicSlug   string
+		Date        string
+		InvalidDate bool
+	}{topic, date, invalidDate})
 }
 
 func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic string) {

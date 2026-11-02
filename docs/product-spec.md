@@ -160,6 +160,10 @@ Daily readings are stored in a `daily_readings` assignment table rather than rec
 
 The topic-only URL creates today's assignment when it is viewed and no assignment exists yet. Dated URLs only return readings that already have a stored assignment; missing dated assignments return not found.
 
+A missing dated reading keeps its 404 response and offers a link to today's
+reading. Invalid dates keep a 400 response with YYYY-MM-DD guidance. Neither
+recovery page creates historical assignments or starts topic discovery.
+
 ## Topic Creation
 
 Missing topics are requested by topic name only. Users are not asked to provide a documentation URL.
