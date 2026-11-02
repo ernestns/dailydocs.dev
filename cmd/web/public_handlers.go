@@ -120,9 +120,7 @@ func (a app) topicPreviewHandler(w http.ResponseWriter, r *http.Request, pathTop
 	// Render the missing result from the same snapshot that resolved the name.
 	// A competing topic can claim this URL after that snapshot closes; only an
 	// explicit POST may reserve the requested identity and begin processing.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusNotFound)
-	renderTemplate(w, queuedTopicTemplate, queuedTopicView{
+	a.renderMissingTopic(w, r, queuedTopicView{
 		Slug: topic.Slug, Name: strings.TrimSpace(requested), Status: "missing",
 		StatusLabel: "Not requested yet",
 	})
@@ -141,9 +139,7 @@ func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic st
 	queued, err := a.loadTopicStatus(r.Context(), topic)
 	if errors.Is(err, sql.ErrNoRows) {
 		name := displayTopicName(topic, topic)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		renderTemplate(w, queuedTopicTemplate, queuedTopicView{
+		a.renderMissingTopic(w, r, queuedTopicView{
 			Slug: topic, Name: name, Status: "missing",
 			StatusLabel: "Not requested yet",
 		})
@@ -157,8 +153,22 @@ func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic st
 	renderTemplate(w, queuedTopicTemplate, queued)
 }
 
+func (a app) renderMissingTopic(w http.ResponseWriter, r *http.Request, topic queuedTopicView) {
+	observedRunID, err := a.latestSearchRunID(r.Context())
+	if err != nil {
+		log.Printf("load missing topic request revision failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	topic.ObservedRunID = observedRunID
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	renderTemplate(w, queuedTopicTemplate, topic)
+}
+
 type homeView struct {
 	Topics          []topicOption
+	ObservedRunID   int64
 	SubmittedTopic  string
 	ValidationError string
 }
@@ -171,10 +181,28 @@ func (a app) homeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderTemplate(w, homeTemplate, homeView{Topics: topics})
+	observedRunID, err := a.latestSearchRunID(r.Context())
+	if err != nil {
+		log.Printf("load topic request revision failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	renderTemplate(w, homeTemplate, homeView{Topics: topics, ObservedRunID: observedRunID})
 }
 
-func renderTopicInputError(w http.ResponseWriter, topic string) {
+func (a app) latestSearchRunID(ctx context.Context) (int64, error) {
+	var latest int64
+	err := a.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id),0) FROM topic_search_runs").Scan(&latest)
+	return latest, err
+}
+
+func (a app) renderTopicInputError(w http.ResponseWriter, r *http.Request, topic string) {
+	observedRunID, err := a.latestSearchRunID(r.Context())
+	if err != nil {
+		log.Printf("load corrected topic request revision failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	message := "Enter a topic name in one line, such as SQLite or Go. URLs, file paths, and instructions cannot be used as topics."
 	if strings.TrimSpace(topic) == "" {
 		message = "Enter a topic name, such as SQLite or Go."
@@ -183,7 +211,7 @@ func renderTopicInputError(w http.ResponseWriter, topic string) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
-	renderTemplate(w, homeTemplate, homeView{SubmittedTopic: topic, ValidationError: message})
+	renderTemplate(w, homeTemplate, homeView{SubmittedTopic: topic, ValidationError: message, ObservedRunID: observedRunID})
 }
 
 func (a app) topicEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
@@ -221,38 +249,50 @@ func (a app) topicEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
 	}{Topic: topic, Results: results})
 }
 
+func parseTopicRequestForm(r *http.Request) error {
+	if err := r.ParseForm(); err != nil {
+		return err
+	}
+	// Support URL-encoded and multipart forms. Parse both before inspecting
+	// the optional revision, without relying on middleware or FormValue to
+	// initialize multipart fields. Handlers remove any temporary form files.
+	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		return err
+	}
+	return nil
+}
+
+func optionalRunID(form url.Values, field string) (*int64, error) {
+	if values, present := form[field]; present {
+		if len(values) != 1 || values[0] == "" || strings.IndexFunc(values[0], func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			return nil, fmt.Errorf("invalid %s", field)
+		}
+		value, err := strconv.ParseInt(values[0], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s", field)
+		}
+		return &value, nil
+	}
+	return nil, nil
+}
+
 func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid process request", http.StatusBadRequest)
-		return
-	}
-	// Support URL-encoded and multipart forms. Parse both before inspecting
-	// the optional revision, without relying on
-	// another middleware or FormValue call to initialize multipart fields.
-	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+	if err := parseTopicRequestForm(r); err != nil {
 		http.Error(w, "invalid process request", http.StatusBadRequest)
 		return
 	}
 	if r.MultipartForm != nil {
 		defer r.MultipartForm.RemoveAll()
 	}
-	var expectedRunID *int64
-	if values, present := r.Form["expected_run_id"]; present {
-		if len(values) != 1 || values[0] == "" || strings.IndexFunc(values[0], func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-			http.Error(w, "invalid expected run id", http.StatusBadRequest)
-			return
-		}
-		value, err := strconv.ParseInt(values[0], 10, 64)
-		if err != nil {
-			http.Error(w, "invalid expected run id", http.StatusBadRequest)
-			return
-		}
-		expectedRunID = &value
+	expectedRunID, err := optionalRunID(r.Form, "expected_run_id")
+	if err != nil {
+		http.Error(w, "invalid expected run id", http.StatusBadRequest)
+		return
 	}
 
 	slug := strings.TrimSpace(r.FormValue("topic"))
@@ -279,7 +319,7 @@ func (a app) processTopicHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if queued.CanProcess && (expectedRunID == nil || *expectedRunID == queued.LatestRunID) {
-		a.processQueuedTopicAsyncWithRevision(slug, expectedRunID)
+		a.processQueuedTopicAsyncWithRevision(slug, expectedRunID, nil)
 	}
 	if isDatastarRequest(r) {
 		a.renderTopicStatus(w, r, slug)
@@ -296,11 +336,25 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	topic := r.URL.Query().Get("topic")
+	var observedRunID *int64
 	if r.Method == http.MethodPost {
+		if err := parseTopicRequestForm(r); err != nil {
+			http.Error(w, "invalid topic request", http.StatusBadRequest)
+			return
+		}
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
+		}
+		var err error
+		observedRunID, err = optionalRunID(r.PostForm, "observed_run_id")
+		if err != nil {
+			http.Error(w, "invalid observed run id", http.StatusBadRequest)
+			return
+		}
 		topic = r.PostFormValue("topic")
 	}
 	if err := topicname.Validate(topic); err != nil {
-		renderTopicInputError(w, topic)
+		a.renderTopicInputError(w, r, topic)
 		return
 	}
 	topic = strings.TrimSpace(topic)
@@ -322,8 +376,8 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 			renderBlockedTopicRetry(w, r, queued)
 			return
 		}
-		if queued.CanProcess {
-			a.processQueuedTopicAsync(queued.Slug)
+		if queued.CanProcess && (observedRunID == nil || queued.LatestRunID <= *observedRunID) {
+			a.processQueuedTopicAsyncWithRevision(queued.Slug, nil, observedRunID)
 		}
 		http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
 		return
@@ -437,6 +491,7 @@ type evaluationResult struct {
 
 type queuedTopicView struct {
 	LatestRunID      int64
+	ObservedRunID    int64
 	GenerationPaused bool
 	Pending          bool
 	RetryBlocked     bool

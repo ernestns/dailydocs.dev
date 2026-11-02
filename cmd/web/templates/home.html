@@ -127,6 +127,7 @@
       <h1>DailyDocs</h1>
       <p>One reading per topic per day.</p>
       <form method="post" action="/read" id="topic-form">
+        <input type="hidden" name="observed_run_id" value="{{.ObservedRunID}}">
         <div class="topic-lookup">
           <input
             name="topic"

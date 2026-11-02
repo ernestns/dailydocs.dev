@@ -212,6 +212,15 @@ their native POST fallback; legacy callers that omit the revision retain their
 existing behavior. The revision is a duplicate-submission guard, not an
 authentication or authorization token.
 
+The home and missing-topic **Request Topic** forms also carry an observation of
+search history. The worker starts a search only if that topic has no attempt
+newer than the form's observation, checking inside the same admission
+transaction. This prevents a repeated POST `/read` from starting a second search
+after the first finishes. Unrelated topics do not invalidate the form. A newly
+rendered home form permits an intentional retry, and existing active catalogs
+remain read-only lookups. Legacy submissions without the observation retain
+their existing behavior.
+
 A rate-limited request remains in the audit history but does not replace the
 latest actual generation attempt in feedback or retry eligibility. An eligible
 failed attempt remains retryable after capacity becomes available, until a later

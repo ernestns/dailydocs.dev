@@ -120,7 +120,11 @@ type ReviewOutput struct {
 type Options struct {
 	// ExpectedRunID optionally conditions named queued processing on the latest
 	// observed run, including rejected admissions. Direct searches ignore it.
-	ExpectedRunID              *int64
+	ExpectedRunID *int64
+	// ObservedRunID optionally bounds named queued processing by the global
+	// run ID observed before a topic was chosen. Unrelated runs do not stale it.
+	// Like ExpectedRunID, direct searches ignore this condition.
+	ObservedRunID              *int64
 	Provider                   Provider
 	Planner                    Planner
 	Reviewer                   Reviewer
@@ -364,7 +368,7 @@ func ProcessQueuedTopic(ctx context.Context, conn *sql.DB, slug string, opts Opt
 		}
 	}
 
-	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts, searchAdmissionPolicy{dailyLimit: dailyLimit, expectedRunID: opts.ExpectedRunID})
+	result, err := searchResolvedTopic(ctx, conn, slug, topic, opts, searchAdmissionPolicy{dailyLimit: dailyLimit, expectedRunID: opts.ExpectedRunID, observedRunID: opts.ObservedRunID})
 	if errors.Is(err, errDailyLimitReached) {
 		return QueueResult{DailyLimitReached: true}, nil
 	}
@@ -522,12 +526,13 @@ func claimSearchRun(ctx context.Context, conn *sql.DB, topicID int64, slug, name
 		return 0, false, fmt.Errorf("begin topic search admission: %w", err)
 	}
 	defer tx.Rollback()
-	if admission.expectedRunID != nil {
+	if admission.expectedRunID != nil || admission.observedRunID != nil {
 		var latest int64
 		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(id),0) FROM topic_search_runs WHERE topic_id=?", topicID).Scan(&latest); err != nil {
 			return 0, false, fmt.Errorf("check observed topic search revision: %w", err)
 		}
-		if latest != *admission.expectedRunID {
+		if (admission.expectedRunID != nil && latest != *admission.expectedRunID) ||
+			(admission.observedRunID != nil && latest > *admission.observedRunID) {
 			// A replay or stale form may arrive after the prior job has already
 			// finished. Do not create another attempt or rate-limit audit row.
 			return 0, false, errQueuedTopicIneligible
@@ -575,6 +580,7 @@ type searchAdmissionPolicy struct {
 	dailyLimit    int
 	onlyQueued    bool
 	expectedRunID *int64
+	observedRunID *int64
 }
 
 func queuedSearchEligible(ctx context.Context, tx *sql.Tx, topicID int64, onlyQueued bool) (bool, error) {

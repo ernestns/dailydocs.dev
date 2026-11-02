@@ -112,7 +112,7 @@ func TestMissingTypedTopicSurvivesRedirectAndEmittedForm(t *testing.T) {
 				t.Fatal("missing-topic page failed", page.Code, page.Body.String())
 			}
 			form := parseEmittedTopicForm(t, page.Body.String())
-			if form.method != http.MethodPost || form.action != "/read" || form.values.Get("topic") != tc.input || len(form.values) != 1 {
+			if form.method != http.MethodPost || form.action != "/read" || form.values.Get("topic") != tc.input || form.values.Get("observed_run_id") != "0" || len(form.values) != 2 {
 				t.Fatalf("request form changed the subject: %+v", form)
 			}
 			for table, want := range map[string]int{"topics": 1, "pages": 1, "daily_readings": 1, "topic_search_runs": 0, "topic_search_results": 0} {

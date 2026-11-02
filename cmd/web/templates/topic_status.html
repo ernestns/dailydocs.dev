@@ -11,6 +11,7 @@
   <p>Request this topic to find documentation worth reading.</p>
   <form method="post" action="/read">
     <input type="hidden" name="topic" value="{{.Name}}">
+    <input type="hidden" name="observed_run_id" value="{{.ObservedRunID}}">
     <button type="submit">Request Topic</button>
   </form>
   {{else if eq .Status "disabled"}}

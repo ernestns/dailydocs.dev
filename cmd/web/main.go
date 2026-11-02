@@ -140,10 +140,10 @@ func run() error {
 }
 
 func (a app) processQueuedTopic(ctx context.Context, slug string) {
-	a.processQueuedTopicWithRevision(ctx, slug, nil)
+	a.processQueuedTopicWithRevision(ctx, slug, nil, nil)
 }
 
-func (a app) processQueuedTopicWithRevision(ctx context.Context, slug string, expectedRunID *int64) {
+func (a app) processQueuedTopicWithRevision(ctx context.Context, slug string, expectedRunID, observedRunID *int64) {
 	if a.searchProvider == nil {
 		return
 	}
@@ -159,6 +159,7 @@ func (a app) processQueuedTopicWithRevision(ctx context.Context, slug string, ex
 	}
 	opts := topicsearch.Options{
 		ExpectedRunID: expectedRunID,
+		ObservedRunID: observedRunID,
 		Provider:      a.searchProvider,
 		Planner:       a.searchPlanner,
 		Reviewer:      a.searchReviewer,
@@ -183,10 +184,10 @@ func (a app) processQueuedTopicWithRevision(ctx context.Context, slug string, ex
 }
 
 func (a app) processQueuedTopicAsync(slug string) bool {
-	return a.processQueuedTopicAsyncWithRevision(slug, nil)
+	return a.processQueuedTopicAsyncWithRevision(slug, nil, nil)
 }
 
-func (a app) processQueuedTopicAsyncWithRevision(slug string, expectedRunID *int64) bool {
+func (a app) processQueuedTopicAsyncWithRevision(slug string, expectedRunID, observedRunID *int64) bool {
 	if a.searchProvider == nil {
 		return false
 	}
@@ -207,7 +208,7 @@ func (a app) processQueuedTopicAsyncWithRevision(slug string, expectedRunID *int
 		return false
 	}
 	if !a.asyncProcessing {
-		a.processQueuedTopicWithRevision(jobCtx, slug, expectedRunID)
+		a.processQueuedTopicWithRevision(jobCtx, slug, expectedRunID, observedRunID)
 		return true
 	}
 	if a.pendingSearches != nil {
@@ -222,7 +223,7 @@ func (a app) processQueuedTopicAsyncWithRevision(slug string, expectedRunID *int
 			defer a.pendingSearches.Delete(slug)
 		}
 		// The generation deadline starts after this job acquires the worker.
-		a.processQueuedTopicWithRevision(jobCtx, slug, expectedRunID)
+		a.processQueuedTopicWithRevision(jobCtx, slug, expectedRunID, observedRunID)
 	}()
 	return true
 }
