@@ -156,6 +156,11 @@ TAVILY_API_KEY=your-key
 OPENAI_API_KEY=your-key
 ```
 
+API keys are trimmed before configuration is checked. An empty or whitespace-only
+Tavily key pauses web generation while preserving saved requests and readings.
+An empty or whitespace-only OpenAI key leaves optional planning and review off;
+configured Tavily search uses deterministic filtering and ranking.
+
 Run local commands through the env wrapper:
 
 ```sh

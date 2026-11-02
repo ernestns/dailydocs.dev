@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -67,13 +68,7 @@ func run() error {
 		}
 	}()
 
-	var searchProvider topicsearch.Provider
-	if os.Getenv("TAVILY_API_KEY") != "" {
-		searchProvider = topicsearch.TavilyClient{
-			APIKey:   os.Getenv("TAVILY_API_KEY"),
-			Endpoint: os.Getenv("TAVILY_ENDPOINT"),
-		}
-	}
+	searchProvider := tavilyProviderFromEnv()
 	searchPlanner := openAIPlannerFromEnv()
 	searchReviewer := openAIReviewerFromEnv()
 	searchLifecycle := newTopicSearchLifecycle()
@@ -228,12 +223,24 @@ func (a app) processQueuedTopicAsyncWithRevision(slug string, expectedRunID, obs
 	return true
 }
 
+func tavilyProviderFromEnv() topicsearch.Provider {
+	key := strings.TrimSpace(os.Getenv("TAVILY_API_KEY"))
+	if key == "" {
+		return nil
+	}
+	return topicsearch.TavilyClient{
+		APIKey:   key,
+		Endpoint: os.Getenv("TAVILY_ENDPOINT"),
+	}
+}
+
 func openAIPlannerFromEnv() topicsearch.Planner {
-	if os.Getenv("OPENAI_API_KEY") == "" {
+	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if key == "" {
 		return nil
 	}
 	return topicsearch.OpenAITopicPlanner{
-		APIKey:          os.Getenv("OPENAI_API_KEY"),
+		APIKey:          key,
 		Endpoint:        os.Getenv("OPENAI_ENDPOINT"),
 		Model:           os.Getenv("OPENAI_PLANNER_MODEL"),
 		ReasoningEffort: os.Getenv("OPENAI_PLANNER_REASONING_EFFORT"),
@@ -241,11 +248,12 @@ func openAIPlannerFromEnv() topicsearch.Planner {
 }
 
 func openAIReviewerFromEnv() topicsearch.Reviewer {
-	if os.Getenv("OPENAI_API_KEY") == "" {
+	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if key == "" {
 		return nil
 	}
 	return topicsearch.OpenAIReviewer{
-		APIKey:   os.Getenv("OPENAI_API_KEY"),
+		APIKey:   key,
 		Endpoint: os.Getenv("OPENAI_ENDPOINT"),
 		Model:    os.Getenv("OPENAI_MODEL"),
 	}
