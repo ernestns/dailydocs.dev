@@ -136,6 +136,11 @@ or `HEAD` during the build prevent installation. Deployment guard tests use
 temporary Git repositories and a local SSH fixture in `go test ./...`, so they
 also run through `just check` without contacting a host.
 
+The health check makes up to five attempts. Each attempt allows two seconds to
+connect and five seconds total, so an unresponsive server cannot stall deployment
+indefinitely. If all attempts fail, the script exits unsuccessfully and reports
+the service status; the installed build remains in place for investigation.
+
 ## Run Locally
 
 Local secrets can be stored in `.env`, which is ignored by Git:

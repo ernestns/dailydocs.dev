@@ -660,10 +660,8 @@ func ExpireStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time
 	`, formatTime(now), runStatusRunning, formatTime(cutoff)); err != nil {
 		return fmt.Errorf("expire stale running searches: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE topics
-		SET status = 'failed',
-			updated_at = ?
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id FROM topics
 		WHERE status = 'searching'
 			AND NOT EXISTS (
 				SELECT 1
@@ -671,8 +669,39 @@ func ExpireStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time
 				WHERE topic_search_runs.topic_id = topics.id
 					AND topic_search_runs.status = ?
 			)
-	`, formatTime(now), runStatusRunning); err != nil {
-		return fmt.Errorf("expire stale search topics: %w", err)
+	`, runStatusRunning)
+	if err != nil {
+		return fmt.Errorf("read stale search topics: %w", err)
+	}
+	defer rows.Close()
+	var topicIDs []int64
+	for rows.Next() {
+		var topicID int64
+		if err := rows.Scan(&topicID); err != nil {
+			return fmt.Errorf("read stale search topic id: %w", err)
+		}
+		topicIDs = append(topicIDs, topicID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read stale search topics: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close stale search topics: %w", err)
+	}
+	for _, topicID := range topicIDs {
+		// An interrupted retry can leave a useful catalog behind. Apply the
+		// same readiness rule as ordinary failure cleanup, within this snapshot.
+		available, err := AvailableReadings(ctx, tx, topicID)
+		if err != nil {
+			return fmt.Errorf("count stale topic readings: %w", err)
+		}
+		status := "failed"
+		if available >= MinimumUsefulResults {
+			status = "active"
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE topics SET status=?, updated_at=? WHERE id=? AND status='searching'", status, formatTime(now), topicID); err != nil {
+			return fmt.Errorf("expire stale search topic: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit expire stale running searches: %w", err)

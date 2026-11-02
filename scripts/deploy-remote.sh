@@ -82,7 +82,7 @@ sudo "$DEPLOY_HELPER"
 
 echo "==> Waiting for health check"
 for _ in 1 2 3 4 5; do
-	if curl --fail --silent --show-error "$HEALTH_URL"; then
+	if curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "$HEALTH_URL"; then
 		echo
 		echo "Deploy complete."
 		exit 0

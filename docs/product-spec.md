@@ -352,6 +352,9 @@ unavailable, while preserving access to saved links and dated assignments.
 Catalog browsing does not acquire a database writer when there are no stale
 searches or abandoned searching topics to clean up. Actual cleanup rechecks
 stored state under its transaction so a completed search is not overwritten.
+After an interrupted search expires, a catalog with at least two distinct active
+readings becomes active again. Its failed attempt remains visible and available
+for explicit retry; cleanup does not generate content or replace saved readings.
 Stored active catalogs with fewer than two readings are labeled as needing more readings; queued topics without readings are shown as not generated.
 
 ## Link Validation
@@ -371,6 +374,10 @@ Broken links should never appear in new recommendations.
 If a healthy redirect resolves to another saved URL in the same topic, the
 validator keeps the original working alias and both page IDs, resets its failure
 count, and continues validation. It does not merge or delete historical rows.
+
+Redirects retain a saved reading's section fragment when the destination does not
+specify one. An explicit replacement or empty fragment in the redirect replaces
+or clears that section, respectively.
 
 Validation results apply only while the page remains active at the URL that was
 checked. Results for changed, disabled, or removed pages are counted as skipped;

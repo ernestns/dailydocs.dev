@@ -3,8 +3,10 @@ package validator
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -119,7 +121,31 @@ func requestURL(ctx context.Context, client *http.Client, method string, rawURL 
 		return 0, "", fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := client.Do(req)
+	// A reading can identify a section, not just a document. HTTP redirects
+	// inherit the previous fragment unless Location explicitly supplies one
+	// (including an empty #). Go's URL resolution alone drops that section.
+	// Copy the client so concurrent validations and caller policy stay intact.
+	requestClient := *client
+	requestClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if next.Response != nil && len(via) > 0 {
+			_, fragment, explicit := strings.Cut(next.Response.Header.Get("Location"), "#")
+			if !explicit {
+				previous := via[len(via)-1].URL
+				next.URL.Fragment, next.URL.RawFragment = previous.Fragment, previous.RawFragment
+			} else if fragment == "" {
+				// URL resolution inherits for a bare #; HTTP explicitly clears it.
+				next.URL.Fragment, next.URL.RawFragment = "", ""
+			}
+		}
+		if client.CheckRedirect != nil {
+			return client.CheckRedirect(next, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	resp, err := requestClient.Do(req)
 	if err != nil {
 		return 0, "", fmt.Errorf("request %s: %w", rawURL, err)
 	}
