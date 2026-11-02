@@ -196,6 +196,10 @@ Import a file:
 DB_PATH=data/dailydocs.sqlite ./bin/dailydocs import-file path/to/sqlite.yaml
 ```
 
+Each seed file must contain exactly one YAML document for one topic. Extra
+documents or malformed trailing content are rejected before any catalog changes,
+so a partially read file cannot silently replace the existing active page list.
+
 ## Validate Links
 
 Check active documentation links and disable links after repeated failures:

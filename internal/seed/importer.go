@@ -1,10 +1,12 @@
 package seed
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"regexp"
@@ -46,8 +48,18 @@ func ImportFile(ctx context.Context, conn *sql.DB, path string) (Result, error) 
 	}
 
 	var topicFile TopicFile
-	if err := yaml.Unmarshal(contents, &topicFile); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	if err := decoder.Decode(&topicFile); err != nil {
 		return Result{}, fmt.Errorf("parse seed file: %w", err)
+	}
+	// A seed file replaces one topic's active catalog. Reject trailing documents
+	// before that replacement rather than silently importing only the first one.
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return Result{}, fmt.Errorf("parse seed file: %w", err)
+		}
+		return Result{}, errors.New("seed file must contain exactly one topic document")
 	}
 
 	if err := topicFile.Validate(); err != nil {

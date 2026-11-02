@@ -153,7 +153,26 @@ func discoverReadings(ctx context.Context, conn *sql.DB, topicID, runID int64, s
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	available, err := AvailableReadings(cleanup, conn, topicID)
+	return finishDiscovery(cleanup, conn, result, usage, failure)
+}
+
+func saveCandidates(ctx context.Context, conn *sql.DB, topicID, runID int64, candidates []storedResult) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return storeSearchCandidates(cleanup, conn, topicID, runID, candidates)
+}
+
+func finishDiscovery(ctx context.Context, conn *sql.DB, result Result, usage ReviewOutput, failure error) (Result, error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return result, errors.Join(failure, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Catalog imports and validation can change active destinations while a
+	// search runs. Derive readiness and its diagnostic from the same writer
+	// snapshot that finalizes the attempt, so an older count cannot hide a
+	// newly usable catalog or mark a shortfall completed.
+	available, err := AvailableReadings(ctx, tx, result.TopicID)
 	if err != nil {
 		return result, errors.Join(failure, err)
 	}
@@ -163,40 +182,25 @@ func discoverReadings(ctx context.Context, conn *sql.DB, topicID, runID int64, s
 	if failure == nil {
 		result.Status = runStatusCompleted
 	}
-	if err := finishDiscovery(cleanup, conn, result, available, usage, failure); err != nil {
-		return result, errors.Join(failure, err)
-	}
-	return result, failure
-}
-
-func saveCandidates(ctx context.Context, conn *sql.DB, topicID, runID int64, candidates []storedResult) error {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	return storeSearchCandidates(cleanup, conn, topicID, runID, candidates)
-}
-
-func finishDiscovery(ctx context.Context, conn *sql.DB, result Result, available int, usage ReviewOutput, failure error) error {
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
 	diagnostic := ""
 	if failure != nil {
 		diagnostic = failure.Error()
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE topic_search_runs SET status=?, stage='', completed_at=datetime('now'), result_count=?, stored_count=?, reviewer_model=?, reviewer_input_tokens=?, reviewer_output_tokens=?, reviewer_total_tokens=?, error=? WHERE id=?`, result.Status, result.ResultCount, result.StoredCount, usage.Model, usage.InputTokens, usage.OutputTokens, usage.TotalTokens, diagnostic, result.RunID)
 	if err != nil {
-		return err
+		return result, errors.Join(failure, err)
 	}
 	status := "failed"
 	if available >= MinimumUsefulResults {
 		status = "active"
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE topics SET status=?,updated_at=datetime('now') WHERE id=?", status, result.TopicID); err != nil {
-		return err
+		return result, errors.Join(failure, err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return result, errors.Join(failure, err)
+	}
+	return result, failure
 }
 
 func mergeReviewUsage(total *ReviewOutput, part ReviewOutput) {

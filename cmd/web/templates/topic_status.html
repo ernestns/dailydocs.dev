@@ -43,7 +43,7 @@
   <form
     method="post"
     action="/process-topic"
-    data-on:submit__prevent="@post('/process-topic', {contentType: 'form'})"
+    data-on:submit__prevent="@post('/process-topic', {contentType: 'form', retry: 'never', retryMaxCount: 0})"
   >
     <input type="hidden" name="topic" value="{{.Slug}}">
     <button type="submit">Process topic</button>

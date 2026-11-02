@@ -198,6 +198,10 @@ When a missing topic is explicitly requested with POST `/read`:
 
 **Process topic** is available for eligible queued or failed topics, catalogs below the useful-reading minimum, and active catalogs whose latest attempt failed. A failed attempt can coexist with an active catalog when enough useful readings survive; it still offers an explicit retry.
 
+The enhanced **Process topic** form disables automatic transport retries, so a
+lost response cannot silently submit another generation request. Refreshing the
+topic checks its latest status; another attempt requires an explicit submission.
+
 A rate-limited request remains in the audit history but does not replace the
 latest actual generation attempt in feedback or retry eligibility. An eligible
 failed attempt remains retryable after capacity becomes available, until a later
@@ -224,6 +228,9 @@ termination retains the existing stale-run protection.
 Failure cleanup commits the failed attempt and its catalog status together, so
 a new attempt cannot be admitted between those updates and then have its
 successful catalog overwritten by the older cleanup.
+Search finalization also counts available readings within the transaction that
+records its outcome. A concurrent seed import cannot leave the catalog status
+based on an obsolete reading count.
 
 Default processing limits for the public and CLI generation paths:
 
