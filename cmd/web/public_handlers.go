@@ -36,6 +36,10 @@ func (a app) routeHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if date == "" && r.URL.Query().Has("topic") {
+		a.topicPreviewHandler(w, r, topic)
+		return
+	}
 
 	createOnMissing := date == ""
 	if createOnMissing {
@@ -92,26 +96,50 @@ func renderReadingUnavailable(w http.ResponseWriter, topic, date string, invalid
 	}{topic, date, invalidDate})
 }
 
+func (a app) topicPreviewHandler(w http.ResponseWriter, r *http.Request, pathTopic string) {
+	requested := r.URL.Query().Get("topic")
+	topic, exists, err := a.lookupTopic(r.Context(), requested)
+	if errors.Is(err, topicname.ErrInvalid) {
+		renderTopicPreviewUnavailable(w, requested, true)
+		return
+	}
+	if err != nil {
+		log.Printf("look up topic preview failed: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if topic.Slug != pathTopic {
+		renderTopicPreviewUnavailable(w, requested, false)
+		return
+	}
+	if exists {
+		http.Redirect(w, r, "/"+topic.Slug, http.StatusSeeOther)
+		return
+	}
+	// Render the missing result from the same snapshot that resolved the name.
+	// A competing topic can claim this URL after that snapshot closes; only an
+	// explicit POST may reserve the requested identity and begin processing.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	renderTemplate(w, queuedTopicTemplate, queuedTopicView{
+		Slug: topic.Slug, Name: strings.TrimSpace(requested), Status: "missing",
+		StatusLabel: "Not requested yet",
+	})
+}
+
+func renderTopicPreviewUnavailable(w http.ResponseWriter, requested string, invalidName bool) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	renderTemplate(w, topicPreviewUnavailableTemplate, struct {
+		LookupURL   string
+		InvalidName bool
+	}{"/read?" + url.Values{"topic": {requested}}.Encode(), invalidName})
+}
+
 func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic string) {
 	queued, err := a.loadTopicStatus(r.Context(), topic)
 	if errors.Is(err, sql.ErrNoRows) {
 		name := displayTopicName(topic, topic)
-		if r.URL.Query().Has("topic") {
-			name = strings.TrimSpace(r.URL.Query().Get("topic"))
-			slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, name)
-			if errors.Is(err, topicname.ErrInvalid) {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if err != nil {
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			if slug != topic {
-				http.Error(w, "topic name does not match this URL", http.StatusBadRequest)
-				return
-			}
-		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		renderTemplate(w, queuedTopicTemplate, queuedTopicView{
@@ -272,17 +300,12 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
 		return
 	}
-	slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, topic)
+	resolved, exists, err := a.lookupTopic(r.Context(), topic)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	var exists bool
-	if err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=?)", slug).Scan(&exists); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	location := "/" + slug
+	location := "/" + resolved.Slug
 	if !exists {
 		location += "?" + url.Values{"topic": {topic}}.Encode()
 	}
@@ -523,34 +546,35 @@ func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topic
 	return topic, results, nil
 }
 
-func (a app) lookupActiveTopic(ctx context.Context, topic string) (queuedTopicView, bool, error) {
-	// Resolve identity and status in one read snapshot so an existing-catalog
-	// form submission stays available while another connection is writing.
+func (a app) lookupTopic(ctx context.Context, topic string) (queuedTopicView, bool, error) {
+	// Resolve identity and existence/status in one read snapshot. An absent
+	// candidate must not become another subject between those checks.
 	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return queuedTopicView{}, false, fmt.Errorf("begin existing topic lookup: %w", err)
+		return queuedTopicView{}, false, fmt.Errorf("begin topic lookup: %w", err)
 	}
 	defer tx.Rollback()
 	slug, name, err := topicsearch.ResolveTopic(ctx, tx, topic)
 	if err != nil {
 		return queuedTopicView{}, false, err
 	}
-	var active bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=? AND status='active')", slug).Scan(&active); err != nil {
+	var status string
+	err = tx.QueryRowContext(ctx, "SELECT status FROM topics WHERE slug=?", slug).Scan(&status)
+	exists := !errors.Is(err, sql.ErrNoRows)
+	if err != nil && exists {
 		return queuedTopicView{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return queuedTopicView{}, false, fmt.Errorf("finish existing topic lookup: %w", err)
+		return queuedTopicView{}, false, fmt.Errorf("finish topic lookup: %w", err)
 	}
-	if !active {
-		return queuedTopicView{}, false, nil
-	}
-	return queuedTopicView{Slug: slug, Name: name, Status: "active"}, true, nil
+	return queuedTopicView{Slug: slug, Name: name, Status: status}, exists, nil
 }
 
 func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, bool, error) {
-	if existing, active, err := a.lookupActiveTopic(ctx, topic); err != nil || active {
-		return existing, active, err
+	if existing, exists, err := a.lookupTopic(ctx, topic); err != nil {
+		return queuedTopicView{}, false, err
+	} else if exists && existing.Status == "active" {
+		return existing, true, nil
 	}
 	// Resolution and insertion must hold the same writer lock: two distinct
 	// names can otherwise both claim a free slug before either insert completes.

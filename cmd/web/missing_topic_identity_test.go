@@ -182,7 +182,7 @@ func TestMissingTopicRejectsInvalidOrMismatchedNameHints(t *testing.T) {
 	}
 }
 
-func TestNameHintsDoNotReinterpretExistingCatalogs(t *testing.T) {
+func TestNamePreviewsDoNotReinterpretExistingCatalogs(t *testing.T) {
 	for _, status := range []string{"active", "queued", "failed"} {
 		t.Run(status, func(t *testing.T) {
 			conn := openWebTestDB(t, context.Background())
@@ -198,7 +198,7 @@ func TestNameHintsDoNotReinterpretExistingCatalogs(t *testing.T) {
 			if lookup.Code != http.StatusSeeOther || lookup.Header().Get("Location") != "/c" {
 				t.Fatal("existing name lost its canonical URL", lookup.Code, lookup.Header())
 			}
-			for _, path := range []string{"/c", "/c?topic=C", "/c?topic=C%0AInjected"} {
+			for _, path := range []string{"/c", "/c?source=bookmark"} {
 				page := httptest.NewRecorder()
 				handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, path, nil))
 				if page.Code != http.StatusOK || !strings.Contains(html.UnescapeString(page.Body.String()), "C++") {
@@ -207,6 +207,13 @@ func TestNameHintsDoNotReinterpretExistingCatalogs(t *testing.T) {
 				form := parseEmittedTopicForm(t, page.Body.String())
 				if form.method != http.MethodPost || form.action != "/process-topic" || form.values.Get("topic") != "c" {
 					t.Fatalf("hint changed selected-catalog retry: %+v", form)
+				}
+			}
+			for _, path := range []string{"/c?topic=C", "/c?topic=C%0AInjected"} {
+				page := httptest.NewRecorder()
+				handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, path, nil))
+				if page.Code != http.StatusBadRequest || !strings.Contains(page.Body.String(), "Topic preview unavailable") || strings.Contains(page.Body.String(), `action="/process-topic"`) {
+					t.Fatal("name preview captured an existing catalog", path, page.Code, page.Body.String())
 				}
 			}
 			var name, savedStatus string

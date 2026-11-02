@@ -9,13 +9,14 @@ import (
 var templateFS embed.FS
 
 var (
-	homeTemplate               = mustTemplate("templates/home.html")
-	topicsTemplate             = mustTemplate("templates/topics.html")
-	topicEvaluationsTemplate   = mustTemplate("templates/topic_evaluations.html")
-	readingTemplate            = mustTemplate("templates/reading.html", "templates/topic_status.html")
-	readingUnavailableTemplate = mustTemplate("templates/reading_unavailable.html")
-	queuedTopicTemplate        = mustTemplate("templates/queued_topic.html", "templates/topic_status.html")
-	topicStatusTemplate        = mustTemplate("templates/topic_status.html")
+	homeTemplate                    = mustTemplate("templates/home.html")
+	topicsTemplate                  = mustTemplate("templates/topics.html")
+	topicEvaluationsTemplate        = mustTemplate("templates/topic_evaluations.html")
+	readingTemplate                 = mustTemplate("templates/reading.html", "templates/topic_status.html")
+	readingUnavailableTemplate      = mustTemplate("templates/reading_unavailable.html")
+	topicPreviewUnavailableTemplate = mustTemplate("templates/topic_preview_unavailable.html")
+	queuedTopicTemplate             = mustTemplate("templates/queued_topic.html", "templates/topic_status.html")
+	topicStatusTemplate             = mustTemplate("templates/topic_status.html")
 )
 
 func mustTemplate(path string, extra ...string) *template.Template {

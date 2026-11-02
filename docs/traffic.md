@@ -61,7 +61,7 @@ These limits protect against scanner paths and fabricated referral domains, but 
 The existing SQLite database stores daily counters, not individual request events.
 One writer drains a nonblocking channel of at most 1,024 events and flushes bounded batches every 10 seconds.
 Normal request handlers perform no analytics SQL and create no analytics goroutine.
-The web process uses one shared SQLite pool connection so an analytics commit cannot invalidate a concurrent read-then-write daily-reading transaction; provider calls do not hold a database transaction. This serializes only in-process database work, leaves other CLI connection behavior unchanged, and does not coordinate unrelated external writers. The regression is [TestTrafficFlushCannotInvalidateAnApplicationWriteTransaction](../cmd/web/traffic_test.go).
+Analytics leaves the application's SQLite connection pool available for concurrent readers. A pending analytics flush or new reading assignment must not make existing saved readings wait for that writer. WAL permits concurrent read snapshots, and immediate write transactions serialize application and analytics writes before reading state that they will update. Provider calls do not hold a database transaction. The write-safety regression is [TestTrafficFlushCannotInvalidateAnApplicationWriteTransaction](../cmd/web/traffic_test.go).
 Daily label caps also bound pending memory and database rows.
 Rows older than the current UTC day plus 89 previous days are removed during flushing.
 

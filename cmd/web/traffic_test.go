@@ -20,6 +20,7 @@ func TestTrafficFlushCannotInvalidateAnApplicationWriteTransaction(t *testing.T)
 	}
 	defer conn.Close()
 	c := newTrafficCollector(conn)
+	defer func() { _ = c.Close(context.Background()) }()
 	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("ok"))
@@ -34,25 +35,24 @@ func TestTrafficFlushCannotInvalidateAnApplicationWriteTransaction(t *testing.T)
 	if err = tx.QueryRow(`SELECT count(*) FROM topics`).Scan(&topics); err != nil {
 		t.Fatal(err)
 	}
-	// Reading assignment follows this same read-then-write transaction pattern.
-	// Without one pool connection the analytics commit invalidates its snapshot.
+	// Reading assignment follows this same immediate read-then-write transaction
+	// pattern. Analytics gets a separate connection but waits for its writer lock.
 	flushed := make(chan error, 1)
 	go func() { flushed <- c.Close(context.Background()) }()
 	deadline := time.After(2 * time.Second)
-	finished := false
-wait:
-	for conn.Stats().WaitCount == 0 {
+	for conn.Stats().InUse < 2 {
 		select {
 		case err = <-flushed:
-			if err != nil {
-				t.Fatal(err)
-			}
-			finished = true
-			break wait
+			t.Fatalf("analytics finished before the app transaction released its writer lock: %v", err)
 		case <-deadline:
-			t.Fatal("analytics did not flush or wait for the app transaction")
+			t.Fatal("analytics did not acquire a separate pooled connection")
 		case <-time.After(time.Millisecond):
 		}
+	}
+	select {
+	case err := <-flushed:
+		t.Fatalf("analytics committed while the app held its read-then-write snapshot: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
 	if _, err = tx.Exec(`INSERT INTO topics(slug,name) VALUES('sqlite','SQLite')`); err != nil {
 		t.Fatalf("analytics invalidated app write: %v", err)
@@ -60,14 +60,97 @@ wait:
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if !finished {
-		if err = <-flushed; err != nil {
-			t.Fatal(err)
-		}
+	if err = <-flushed; err != nil {
+		t.Fatal(err)
 	}
 	var views int
 	if err = conn.QueryRow(`SELECT sum(count) FROM traffic_daily WHERE kind='total'`).Scan(&views); err != nil || views != 1 {
 		t.Fatalf("analytics flush lost after app commit: views=%d err=%v", views, err)
+	}
+}
+
+func TestBlockedTrafficFlushLeavesSavedReadingAvailable(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dailydocs.sqlite")
+	conn, err := db.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	external, err := db.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer external.Close()
+	importWebTopic(t, ctx, conn, "sqlite", "SQLite")
+	seedWebDailyReading(t, ctx, conn, "sqlite", "2026-06-27", "Write-Ahead Logging")
+	c := newTrafficCollector(conn)
+	defer func() { _ = c.Close(ctx) }()
+	provider := &countingWebProvider{}
+	h := c.Middleware(newTestHandlerWithProvider(conn, provider))
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "http://dailydocs.dev/sqlite", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("seeded saved reading: %d", first.Code)
+	}
+
+	writer, err := external.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	if _, err := writer.Exec(`UPDATE topics SET description='uncommitted external writer' WHERE slug='sqlite'`); err != nil {
+		t.Fatal(err)
+	}
+	flushed := make(chan error, 1)
+	// Close drains the real middleware event and runs the same flush as the
+	// periodic collector tick, without waiting ten seconds for that tick.
+	go func() { flushed <- c.Close(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for conn.Stats().InUse != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("collector did not occupy a pooled connection")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Allow the short WAL label read to finish; the flush then remains blocked
+	// at writer admission until the independent transaction releases its lock.
+	time.Sleep(40 * time.Millisecond)
+	select {
+	case err := <-flushed:
+		t.Fatalf("flush unexpectedly finished under the external writer: %v", err)
+	default:
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dailydocs.dev/sqlite", nil))
+		done <- response
+	}()
+	select {
+	case response := <-done:
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Write-Ahead Logging") {
+			t.Fatalf("saved reading failed: %d %s", response.Code, response.Body.String())
+		}
+	case <-time.After(500 * time.Millisecond):
+		_ = writer.Rollback()
+		<-done
+		t.Fatal("saved reading waited for a blocked analytics flush")
+	}
+	if err := writer.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-flushed; err != nil {
+		t.Fatalf("analytics flush after release: %v", err)
+	}
+	var assignments, runs, views int
+	if err := conn.QueryRow(`SELECT (SELECT count(*) FROM daily_readings),
+		(SELECT count(*) FROM topic_search_runs),
+		(SELECT sum(count) FROM traffic_daily WHERE kind='total')`).Scan(&assignments, &runs, &views); err != nil {
+		t.Fatal(err)
+	}
+	if assignments != 1 || runs != 0 || views != 1 || provider.calls != 0 {
+		t.Fatalf("changed application state or lost view: assignments=%d runs=%d views=%d provider=%d", assignments, runs, views, provider.calls)
 	}
 }
 

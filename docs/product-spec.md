@@ -182,6 +182,11 @@ Submitting an existing active topic uses a read-only snapshot and remains
 available while another connection writes. Requests that need catalog creation
 recheck identity and status after acquiring the writer lock.
 
+Undated preview URLs carrying a `topic` name preserve that requested subject.
+If the URL no longer matches the name, the page returns HTTP 400 with a link to
+look up the original name again. Preview visits create no assignments or search
+work. Plain topic URLs and all dated reading URLs retain their saved identities.
+
 When a missing topic is explicitly requested with POST `/read`:
 
 1. Validate the topic name and resolve its identity, preserving existing names and URLs.

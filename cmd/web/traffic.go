@@ -7,9 +7,8 @@ import (
 )
 
 func newTrafficCollector(conn *sql.DB) *traffic.Collector {
-	// Keep app read-then-write transactions and analytics commits on one SQLite
-	// connection: a concurrent WAL commit would otherwise invalidate a reader
-	// snapshot when it later assigns a daily reading. Provider calls hold no tx.
-	conn.SetMaxOpenConns(1)
+	// db.Open uses immediate writer transactions to protect read-then-write
+	// snapshots. Keep pooled connections available so a writer waiting on SQLite
+	// does not also block saved-reading and catalog reads.
 	return traffic.New(conn)
 }
