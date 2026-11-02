@@ -119,16 +119,22 @@ func requestURL(ctx context.Context, client *http.Client, method string, rawURL 
 }
 
 func recordSuccess(ctx context.Context, conn *sql.DB, pageID int64, finalURL string) error {
+	// A redirect may lead to another saved page in this topic. Keep the working
+	// alias in that case: merging/deleting rows would change reading history.
 	_, err := conn.ExecContext(ctx, `
-		UPDATE pages
+		UPDATE pages AS current
 		SET
-			url = ?,
+			url = CASE WHEN EXISTS (
+				SELECT 1 FROM pages AS destination
+				WHERE destination.topic_id = current.topic_id
+					AND destination.url = ? AND destination.id != current.id
+			) THEN current.url ELSE ? END,
 			last_verified = datetime('now'),
 			verification_failures = 0,
 			last_error = '',
 			updated_at = datetime('now')
 		WHERE id = ?
-	`, finalURL, pageID)
+	`, finalURL, finalURL, pageID)
 	if err != nil {
 		return fmt.Errorf("record link success: %w", err)
 	}

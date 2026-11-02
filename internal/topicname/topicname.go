@@ -15,6 +15,17 @@ var slugPattern = regexp.MustCompile(`^[\pL\pN][\pL\pN-]*$`)
 
 func IsSlug(value string) bool { return slugPattern.MatchString(value) }
 
+// IsReservedSlug identifies paths used by application endpoints rather than
+// daily reading pages. Keep Slug's raw name identity independent of routing.
+func IsReservedSlug(value string) bool {
+	switch value {
+	case "health", "read", "topics", "process-topic":
+		return true
+	default:
+		return false
+	}
+}
+
 // Validate rejects clear non-topic syntax, not unfamiliar subjects or short names.
 // Semantic uncertainty belongs to the planner; a provider failure proves nothing about validity.
 func Validate(value string) error {

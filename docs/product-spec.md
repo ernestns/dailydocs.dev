@@ -152,6 +152,14 @@ replace its saved assignment.
 
 The topic path segment uses the topic slug. The date path segment uses `YYYY-MM-DD`.
 
+New topics whose names map to the application routes `health`, `read`, `topics`,
+or `process-topic` receive a `-topic` suffix, with disambiguation when needed.
+Existing topic identities remain unchanged. Seed imports reject reserved slugs
+with guidance to choose a reachable topic URL.
+Topic creation resolves and reserves its URL in one database transaction, so
+simultaneous requests for distinct names cannot claim the same catalog. Every
+fallback URL is checked for an existing owner before use.
+
 ## Reading Selection
 
 Each topic has a stable reading order.
@@ -271,6 +279,8 @@ the suggestion limit is applied. Editing the query clears previous suggestions.
 Loading and unavailable suggestions are distinct from a completed search with
 no matches; visitors can still submit the topic when suggestions are unavailable.
 Keyboard dismissal remains respected if a pending response arrives later.
+Arrow keys reveal suggestions before selecting them; input-method composition
+keeps control of its own arrow, Enter, and Escape keys.
 
 If a topic does not exist, the UI should clearly offer to request the topic.
 
@@ -313,10 +323,14 @@ Responsibilities:
 - HEAD requests
 - redirect handling
 - broken link detection
-- update `last_checked`
+- update `last_verified`
 - disable consistently failing links
 
 Broken links should never appear in new recommendations.
+
+If a healthy redirect resolves to another saved URL in the same topic, the
+validator keeps the original working alias and both page IDs, resets its failure
+count, and continues validation. It does not merge or delete historical rows.
 
 ## Architecture
 

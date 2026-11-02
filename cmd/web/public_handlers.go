@@ -230,29 +230,18 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, topic)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
 	// Form input is a subject name, so legacy lossy slugs cannot capture a
 	// different valid subject. Direct GET URLs keep their historical identity.
 	if r.Method == http.MethodPost {
-		var active bool
-		if err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=? AND status='active')", slug).Scan(&active); err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		if active {
-			// Viewing a saved catalog does not implicitly request a retry.
-			http.Redirect(w, r, "/"+slug, http.StatusSeeOther)
-			return
-		}
-		queued, err := a.queueTopic(r.Context(), topic)
+		queued, alreadyActive, err := a.queueTopic(r.Context(), topic)
 		if err != nil {
 			log.Printf("queue topic failed: %v", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if alreadyActive {
+			// Viewing a saved catalog does not implicitly request a retry.
+			http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
 			return
 		}
 		if queued.RetryBlocked {
@@ -263,6 +252,11 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 			a.processQueuedTopicAsync(queued.Slug)
 		}
 		http.Redirect(w, r, "/"+queued.Slug, http.StatusSeeOther)
+		return
+	}
+	slug, _, err := topicsearch.ResolveTopic(r.Context(), a.db, topic)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	var exists bool
@@ -511,13 +505,32 @@ func loadTopicEvaluations(ctx context.Context, conn *sql.DB, slug string) (topic
 	return topic, results, nil
 }
 
-func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, error) {
-	slug, name, err := topicsearch.ResolveTopic(ctx, a.db, topic)
+func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, bool, error) {
+	// Resolution and insertion must hold the same writer lock: two distinct
+	// names can otherwise both claim a free slug before either insert completes.
+	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		return queuedTopicView{}, err
+		return queuedTopicView{}, false, fmt.Errorf("begin topic request: %w", err)
+	}
+	defer tx.Rollback()
+	slug, name, err := topicsearch.ResolveTopic(ctx, tx, topic)
+	if err != nil {
+		return queuedTopicView{}, false, err
+	}
+	var active bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM topics WHERE slug=? AND status='active')", slug).Scan(&active); err != nil {
+		return queuedTopicView{}, false, err
+	}
+	if active {
+		if err := tx.Commit(); err != nil {
+			return queuedTopicView{}, false, fmt.Errorf("finish existing topic request: %w", err)
+		}
+		// The caller only needs the stable URL. Do not make an existing-catalog
+		// lookup depend on generation feedback or update its saved metadata.
+		return queuedTopicView{Slug: slug, Name: name, Status: "active"}, true, nil
 	}
 
-	_, err = a.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
         INSERT INTO topics (slug, name, status, updated_at)
 		VALUES (?, ?, 'queued', datetime('now'))
 		ON CONFLICT(slug) DO UPDATE SET
@@ -528,9 +541,13 @@ func (a app) queueTopic(ctx context.Context, topic string) (queuedTopicView, err
 			updated_at = datetime('now')
 	`, slug, name)
 	if err != nil {
-		return queuedTopicView{}, fmt.Errorf("upsert queued topic: %w", err)
+		return queuedTopicView{}, false, fmt.Errorf("upsert queued topic: %w", err)
 	}
-	return a.loadTopicStatus(ctx, slug)
+	if err := tx.Commit(); err != nil {
+		return queuedTopicView{}, false, fmt.Errorf("save topic request: %w", err)
+	}
+	queued, err := a.loadTopicStatus(ctx, slug)
+	return queued, false, err
 }
 
 func parseTopicEvaluationsPath(path string) (string, bool) {

@@ -58,6 +58,27 @@ assert.equal(setup("C++").elements["topic-button"].disabled, false, "initial res
 console.log("Actual home script passed: initial/whitespace disabled, immediate typing/clearing, short and punctuated names, submit guard, and restored values.");
 
 async function testAutocomplete() {
+  const composition = setup("日本", [{slug: "日本語", name: "日本語"}]);
+  await composition.listeners.get("topic-input:input")();
+  const compositionInput = composition.elements["topic-input"];
+  const compositionResults = composition.elements["topic-results"];
+  for (const key of ["ArrowDown", "ArrowUp", "Enter", "Escape"]) {
+    let prevented = false;
+    composition.listeners.get("topic-input:keydown")({key, isComposing: true, preventDefault() { prevented = true; }});
+    assert.equal(prevented, false, "autocomplete must leave " + key + " to the input method during composition");
+    assert.equal(compositionInput.value, "日本", "composition must not replace unfinished text with a suggestion");
+    assert.equal(compositionInput.getAttribute("aria-activedescendant"), null, "composition must not select an autocomplete option");
+    assert.equal(compositionResults.hidden, false, "composition Escape must not dismiss autocomplete");
+  }
+  for (const key of ["ArrowDown", "Enter"]) {
+    let prevented = false;
+    composition.listeners.get("topic-input:keydown")({key, isComposing: false, preventDefault() { prevented = true; }});
+    assert.equal(prevented, true, "ordinary autocomplete keys must work after composition ends");
+  }
+  assert.equal(compositionInput.value, "日本語");
+  assert.equal(compositionResults.hidden, true);
+  console.log("Actual home script passed: IME composition preserves native keys and unfinished text; ordinary selection resumes afterward.");
+
   const keyboard = setup("G", [{slug: "go", name: "Go"}, {slug: "godot", name: "Godot"}]);
   const input = keyboard.elements["topic-input"], results = keyboard.elements["topic-results"];
   const button = keyboard.elements["topic-button"];
@@ -103,6 +124,18 @@ async function testAutocomplete() {
   assert.equal(results.children[0].textContent, "Godot", "reopened suggestion must match the selected topic");
   key("Enter");
   assert.equal(input.value, "Godot", "Enter must select the visible highlighted topic");
+  key("Escape");
+  key("ArrowUp");
+  assert.equal(results.hidden, false, "ArrowUp must reveal suggestions before selecting an option");
+  assert.equal(input.getAttribute("aria-expanded"), "true");
+  selected(0);
+  key("Enter");
+  assert.equal(input.value, "Godot", "ArrowUp selection must remain usable after Escape dismissal");
+  input.value = "";
+  await keyboard.listeners.get("topic-input:input")();
+  key("ArrowUp");
+  assert.equal(results.hidden, true, "ArrowUp cannot open an empty suggestion list");
+  assert.equal(input.getAttribute("aria-activedescendant"), null, "empty results cannot have an active option");
 
   for (const [plain, name, slug] of [["C", "C++", "c"], ["NET", ".NET", "net"]]) {
     const identity = setup(plain, [{slug, name}]);

@@ -12,13 +12,21 @@ import (
 	"github.com/ernestns/daily-docs/internal/topicname"
 )
 
+type topicLookup interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 // ResolveTopic preserves existing named topics and their historical URL assignments.
-func ResolveTopic(ctx context.Context, conn *sql.DB, value string) (string, string, error) {
+func ResolveTopic(ctx context.Context, conn topicLookup, value string) (string, string, error) {
 	if err := topicname.Validate(value); err != nil {
 		return "", "", err
 	}
 	name := displayTopicName(value, value)
-	slug := topicname.Slug(value)
+	rawSlug := topicname.Slug(value)
+	slug := rawSlug
+	if topicname.IsReservedSlug(slug) {
+		slug += "-topic"
+	}
 	var existingSlug, existingName string
 	err := conn.QueryRowContext(ctx, "SELECT slug,name FROM topics WHERE lower(name)=lower(?) ORDER BY id LIMIT 1", name).Scan(&existingSlug, &existingName)
 	if err == nil {
@@ -27,18 +35,27 @@ func ResolveTopic(ctx context.Context, conn *sql.DB, value string) (string, stri
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", "", err
 	}
-	err = conn.QueryRowContext(ctx, "SELECT name FROM topics WHERE slug=?", slug).Scan(&existingName)
-	if err == nil {
-		if topicname.Slug(existingName) == slug {
+	baseSlug := slug
+	hash := sha256.Sum256([]byte(strings.ToLower(name)))
+	for attempt := 0; ; attempt++ {
+		err = conn.QueryRowContext(ctx, "SELECT name FROM topics WHERE slug=?", slug).Scan(&existingName)
+		if errors.Is(err, sql.ErrNoRows) {
+			return slug, name, nil
+		}
+		if err != nil {
+			return "", "", err
+		}
+		if topicname.Slug(existingName) == rawSlug {
 			return slug, existingName, nil
 		}
-		// An older lossy slug may already belong to a different punctuated name.
-		hash := sha256.Sum256([]byte(strings.ToLower(name)))
-		slug = fmt.Sprintf("%s-%x", slug, hash[:4])
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return "", "", err
+		// A lossy legacy slug or reserved-route suffix may already belong to a
+		// different name. Check every fallback too: a valid topic may spell a
+		// generated suffix literally, so a hash alone does not prove ownership.
+		slug = fmt.Sprintf("%s-%x", baseSlug, hash[:4])
+		if attempt > 0 {
+			slug = fmt.Sprintf("%s-%d", slug, attempt+1)
+		}
 	}
-	return slug, name, nil
 }
 
 // AvailableReadings counts the same distinct destinations used by discovery.

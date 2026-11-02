@@ -273,6 +273,7 @@
     });
 
     input.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
       if (event.key === "ArrowDown") {
         event.preventDefault();
         suggestionsDismissed = false;
@@ -281,6 +282,8 @@
         updateActiveOption();
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
+        suggestionsDismissed = false;
+        if (results.hidden) openResults();
         activeIndex = matches.length ? Math.max(activeIndex - 1, 0) : -1;
         updateActiveOption();
       } else if (event.key === "Enter" && activeIndex >= 0 && !results.hidden) {

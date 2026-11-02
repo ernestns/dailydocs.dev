@@ -163,9 +163,28 @@ type storedResult struct {
 func SearchTopic(ctx context.Context, conn *sql.DB, topic string, opts Options) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
-	slug, name, err := ResolveTopic(ctx, conn, topic)
+	if err := topicname.Validate(topic); err != nil {
+		return Result{}, err
+	}
+	if opts.Provider == nil {
+		return Result{}, errors.New("topic search provider is required")
+	}
+	// Reserve the resolved identity under the same writer transaction. Another
+	// request must not claim this slug between the lookup and catalog creation.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Result{}, fmt.Errorf("begin search topic creation: %w", err)
+	}
+	defer tx.Rollback()
+	slug, name, err := ResolveTopic(ctx, tx, topic)
 	if err != nil {
 		return Result{}, err
+	}
+	if _, err := ensureTopic(ctx, tx, slug, name); err != nil {
+		return Result{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Result{}, fmt.Errorf("commit search topic creation: %w", err)
 	}
 	return searchResolvedTopic(ctx, conn, slug, name, opts)
 }
@@ -559,7 +578,10 @@ func ExpireStaleRunningSearches(ctx context.Context, conn *sql.DB, now time.Time
 	return nil
 }
 
-func ensureTopic(ctx context.Context, conn *sql.DB, slug string, name string) (int64, error) {
+func ensureTopic(ctx context.Context, conn interface {
+	topicLookup
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, slug string, name string) (int64, error) {
 	_, err := conn.ExecContext(ctx, `
 		INSERT INTO topics (slug, name, status, updated_at)
 		VALUES (?, ?, 'queued', datetime('now'))

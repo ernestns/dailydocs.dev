@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ernestns/daily-docs/internal/topicname"
 	"gopkg.in/yaml.v3"
 )
 
@@ -122,6 +123,9 @@ func (tf TopicFile) Validate() error {
 	}
 	if !topicSlugPattern.MatchString(tf.Topic) {
 		return fmt.Errorf("topic %q must be a lowercase slug", tf.Topic)
+	}
+	if topicname.IsReservedSlug(tf.Topic) {
+		return fmt.Errorf("topic %q is reserved for an application route; choose a different slug such as %q", tf.Topic, tf.Topic+"-topic")
 	}
 	if strings.TrimSpace(tf.Name) == "" {
 		return errors.New("name is required")
