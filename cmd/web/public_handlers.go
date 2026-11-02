@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ernestns/daily-docs/internal/reading"
 	"github.com/ernestns/daily-docs/internal/topicname"
@@ -127,6 +128,12 @@ func (a app) handleMissingTopic(w http.ResponseWriter, r *http.Request, topic st
 	renderTemplate(w, queuedTopicTemplate, queued)
 }
 
+type homeView struct {
+	Topics          []topicOption
+	SubmittedTopic  string
+	ValidationError string
+}
+
 func (a app) homeHandler(w http.ResponseWriter, r *http.Request) {
 	topics, err := listTopics(r.Context(), a.db, "", 10)
 	if err != nil {
@@ -135,9 +142,19 @@ func (a app) homeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderTemplate(w, homeTemplate, struct {
-		Topics []topicOption
-	}{Topics: topics})
+	renderTemplate(w, homeTemplate, homeView{Topics: topics})
+}
+
+func renderTopicInputError(w http.ResponseWriter, topic string) {
+	message := "Enter a topic name in one line, such as SQLite or Go. URLs, file paths, and instructions cannot be used as topics."
+	if strings.TrimSpace(topic) == "" {
+		message = "Enter a topic name, such as SQLite or Go."
+	} else if utf8.RuneCountInString(strings.TrimSpace(topic)) > 200 {
+		message = "Use 200 characters or fewer for the topic name."
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	renderTemplate(w, homeTemplate, homeView{SubmittedTopic: topic, ValidationError: message})
 }
 
 func (a app) topicEvaluationsHandler(w http.ResponseWriter, r *http.Request) {
@@ -222,14 +239,15 @@ func (a app) generateReadingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	topic := strings.TrimSpace(r.URL.Query().Get("topic"))
+	topic := r.URL.Query().Get("topic")
 	if r.Method == http.MethodPost {
-		topic = strings.TrimSpace(r.PostFormValue("topic"))
+		topic = r.PostFormValue("topic")
 	}
 	if err := topicname.Validate(topic); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		renderTopicInputError(w, topic)
 		return
 	}
+	topic = strings.TrimSpace(topic)
 	// Form input is a subject name, so legacy lossy slugs cannot capture a
 	// different valid subject. Direct GET URLs keep their historical identity.
 	if r.Method == http.MethodPost {

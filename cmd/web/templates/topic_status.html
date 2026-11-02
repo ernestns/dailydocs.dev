@@ -13,6 +13,8 @@
     <input type="hidden" name="topic" value="{{.Name}}">
     <button type="submit">Request Topic</button>
   </form>
+  {{else if eq .Status "disabled"}}
+  {{/* The status message explains this state; page navigation remains below. */}}
   {{else if .InvalidTopic}}
   <p>The search did not continue for this request.</p>
   {{else if and .Pending (not .IsProcessing)}}

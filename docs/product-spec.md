@@ -241,6 +241,10 @@ When OpenAI is not configured, DailyDocs uses one bounded search with determinis
 
 Input hygiene rejects raw URLs, absolute/traversal paths, controls and clear instruction/markup payloads before topic, run, or provider work. Short, punctuated, numeric, Unicode, and named/scoped subjects remain eligible, including Go, R, C++, C#, .NET, `@scope/library`, `HTML div element`, `SQL SELECT`, `CSS @media`, and `Git ../ pathspec`. Topic identity follows [Topic Creation](#topic-creation). The planner can reject a clear non-topic, but unfamiliar or uncertain learning subjects remain eligible; provider errors are availability failures, never proof of invalidity.
 
+Invalid form submissions keep their input in an editable form with an associated
+error message and HTTP 400 status. Length errors explain the 200-character limit.
+Editing clears the old error; rejecting input creates no topic or search work.
+
 Stored search results must include:
 
 - topic
@@ -312,6 +316,8 @@ The `/topics` catalog retrieves at most 50 topics per page in SQL, ordered by na
 Name/slug substring search (`q`) and stored-status filters (`status=active`, `queued`, `searching`, or `failed`) compose with `page` pagination. Accessible previous/next links retain both filters. Submitting empty filters remains usable and returns to the full catalog.
 Page numbers must be positive integers; invalid page or status values return a bad request. A page beyond the matching range displays the last page, while an empty catalog or unmatched filter has an explicit empty state.
 The catalog includes topics without readings and distinguishes distinct active reading destinations from accepted candidate rows and all discovered candidates. It excludes disabled topics.
+Direct visits to disabled topics explain that new readings and processing are
+unavailable, while preserving access to saved links and dated assignments.
 Stored active catalogs with fewer than two readings are labeled as needing more readings; queued topics without readings are shown as not generated.
 
 ## Link Validation

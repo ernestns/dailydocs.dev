@@ -19,7 +19,7 @@ function setup(restoredValue = "", suggestions = undefined, transport = undefine
       set innerHTML(value) { this.children = []; },
     };
   }
-  const elements = Object.fromEntries(["topic-input", "topic-button", "topic-status", "topic-results", "topic-form"].map(id => [id, element(id)]));
+  const elements = Object.fromEntries(["topic-input", "topic-button", "topic-status", "topic-error", "topic-results", "topic-form"].map(id => [id, element(id)]));
   const document = { getElementById(id) { return elements[id]; }, createElement() { return element("option"); } };
   const window = { addEventListener(name, callback) { listeners.set("window:" + name, callback); }, setTimeout() {} };
   // Leave autocomplete pending: enable/disable must not wait for the network.
@@ -58,6 +58,27 @@ assert.equal(setup("C++").elements["topic-button"].disabled, false, "initial res
 console.log("Actual home script passed: initial/whitespace disabled, immediate typing/clearing, short and punctuated names, submit guard, and restored values.");
 
 async function testAutocomplete() {
+  const correction = setup("https://sqlite.org/wal.html", [{slug: "sqlite", name: "SQLite"}]);
+  const correctionInput = correction.elements["topic-input"];
+  const correctionError = correction.elements["topic-error"];
+  correctionInput.setAttribute("aria-invalid", "true");
+  correctionInput.setAttribute("aria-describedby", "topic-error");
+  correctionError.textContent = "Enter a topic name, such as SQLite or Go.";
+  correctionError.hidden = false;
+  correction.listeners.get("window:pageshow")();
+  assert.equal(correctionError.hidden, false, "restoring the page must retain its validation guidance");
+  correctionInput.value = "SQLite";
+  await correction.listeners.get("topic-input:input")();
+  assert.equal(correctionError.hidden, true, "editing must clear the obsolete validation message");
+  assert.equal(correctionError.textContent, "");
+  assert.equal(correctionInput.getAttribute("aria-invalid"), null);
+  assert.equal(correctionInput.getAttribute("aria-describedby"), null);
+  assert.equal(correction.elements["topic-button"].disabled, false);
+  assert.equal(correction.elements["topic-button"].textContent, "View Reading");
+  let correctionBlocked = false;
+  correction.listeners.get("topic-form:submit")({preventDefault() { correctionBlocked = true; }});
+  assert.equal(correctionBlocked, false, "corrected input must submit normally");
+
   const composition = setup("日本", [{slug: "日本語", name: "日本語"}]);
   await composition.listeners.get("topic-input:input")();
   const compositionInput = composition.elements["topic-input"];

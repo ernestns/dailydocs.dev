@@ -86,6 +86,11 @@
       font-size: 0.95rem;
       line-height: 1.5rem;
     }
+    .topic-error {
+      color: #9c2f23;
+      font-size: 1rem;
+      margin-bottom: 0.75rem;
+    }
     .topic-results {
       position: absolute;
       z-index: 2;
@@ -126,6 +131,7 @@
           <input
             name="topic"
             id="topic-input"
+            value="{{.SubmittedTopic}}"
             autocomplete="off"
             placeholder="sqlite"
             aria-label="Topic"
@@ -133,12 +139,14 @@
             aria-autocomplete="list"
             aria-expanded="false"
             aria-controls="topic-results"
+            {{if .ValidationError}}aria-invalid="true" aria-describedby="topic-error" autofocus{{end}}
             required
           >
           <ul class="topic-results" id="topic-results" role="listbox" hidden></ul>
         </div>
         <button type="submit" id="topic-button">View Reading</button>
       </form>
+      <p class="topic-error" id="topic-error" role="alert" {{if not .ValidationError}}hidden{{end}}>{{.ValidationError}}</p>
       <p class="lookup-status" id="topic-status" role="status" aria-live="polite"></p>
       <p><a href="/topics">All topics</a></p>
     </section>
@@ -147,6 +155,7 @@
     const input = document.getElementById("topic-input");
     const button = document.getElementById("topic-button");
     const status = document.getElementById("topic-status");
+    const validationError = document.getElementById("topic-error");
     const results = document.getElementById("topic-results");
     let controller = null;
     let matches = [];
@@ -245,6 +254,10 @@
     }
 
     input.addEventListener("input", async () => {
+      validationError.hidden = true;
+      validationError.textContent = "";
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
       const value = input.value.trim();
       const currentRequest = ++requestID;
       suggestionsDismissed = false;

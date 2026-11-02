@@ -42,7 +42,7 @@ service: dailydocs.service
 ```
 
 On Ubuntu 26, `golang-go` installs the Go 1.26 series.
-The minimum patch version is declared in `go.mod` (currently 1.26.6).
+The minimum patch version is declared in `go.mod` (currently 1.26.10).
 Leave Go's normal automatic toolchain selection enabled so an older installed patch can fetch the required version when building.
 
 Override defaults with environment variables:
@@ -216,19 +216,33 @@ The script prints the backup path.
 
 ## Restore SQLite
 
-Restore requires an explicit confirmation environment variable because it replaces the database file:
+Restore requires an explicit confirmation environment variable because it replaces the database contents:
 
 ```sh
 RESTORE_CONFIRM=replace-dailydocs-db DB_PATH=/opt/dailydocs/data/dailydocs.sqlite ./scripts/restore-sqlite.sh /opt/dailydocs/backups/dailydocs-YYYYMMDDTHHMMSSZ.sqlite.gz
 ```
 
+The destination database must already exist with the application user's ownership
+and intended permissions. On a fresh host, provision it before restoring; the
+script refuses to silently create a root-owned database that the service cannot
+use.
+
 The restore script:
 
-- verifies the backup with `PRAGMA integrity_check`
-- stops `dailydocs.service` if it exists
-- copies the current database to a `.pre-restore-*` file
-- installs the restored database
-- starts `dailydocs.service` if it exists
+- verifies the backup with `PRAGMA integrity_check` before stopping a service
+- stops `dailydocs.service` only if it is active, and rejects uncertain service states
+- saves a private, uniquely named `.pre-restore-*` snapshot using SQLite's backup
+  mechanism, including any committed WAL data left after a crash
+- verifies that snapshot and keeps it self-contained in rollback journal mode
+- restores through SQLite rather than replacing the database file, preserving
+  existing ownership and permissions and preventing old WAL data from returning
+- resumes only the service it stopped, including after a failed restore attempt;
+  a previously inactive service stays inactive
+
+The snapshot path is printed before restoration begins and remains available if
+restoration fails. Restart failures produce a nonzero exit and an explicit error.
+Restore integration tests use temporary SQLite databases, a real crashed writer,
+and a fake service controller; they never restore production or manage real services.
 
 ## Systemd
 

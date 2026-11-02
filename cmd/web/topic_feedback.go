@@ -27,6 +27,9 @@ func addTopicFeedback(ctx context.Context, conn *sql.DB, topicID int64, runStatu
 	topic.RetryBlocked = topic.RetryBlocked && !topic.InvalidTopic
 	topic.CanProcess = !topic.Pending && !topic.RetryBlocked && topic.Status != "disabled" && !topic.InvalidTopic && (topic.Status == "queued" || topic.Status == "failed" || topic.Status == "searching" || count < topicsearch.MinimumUsefulResults || runStatus == "failed" || runStatus == "running")
 	switch {
+	case topic.Status == "disabled":
+		topic.StatusLabel = "Topic disabled"
+		topic.Message = "New readings and topic processing are unavailable for this topic. Previously saved readings remain available."
 	case topic.InvalidTopic:
 		topic.StatusLabel = "Choose a topic"
 		topic.Message = "Enter a specific subject or technology to find documentation. This request was not treated as a valid topic."
@@ -77,7 +80,7 @@ func (a app) loadTopicStatus(ctx context.Context, slug string) (queuedTopicView,
 	if err != nil {
 		return topic, err
 	}
-	if topic.Pending && !topic.IsProcessing {
+	if topic.Pending && !topic.IsProcessing && topic.Status != "disabled" {
 		topic.StatusLabel = "Waiting for worker"
 		topic.Message = "This explicit request is waiting for the current worker. The daily limit is checked before generation starts."
 	}

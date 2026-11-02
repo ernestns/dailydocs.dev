@@ -26,12 +26,49 @@ if [[ ! -r "$BACKUP_FILE" ]]; then
 	exit 1
 fi
 
+if [[ ! -f "$DB_PATH" ]]; then
+	echo "Destination database does not exist: $DB_PATH. Provision it with the application user's ownership and permissions before restoring." >&2
+	exit 1
+fi
+
 restore_tmp="$(mktemp)"
 current_backup=""
+snapshot_ready=0
+service_stopped=0
+
+resume_service() {
+	if [[ "$service_stopped" == 1 ]]; then
+		service_stopped=0
+		if ! systemctl start "$APP_NAME.service"; then
+			echo "Unable to restart $APP_NAME.service after restore processing." >&2
+			return 1
+		fi
+	fi
+}
+
 cleanup() {
-	rm -f "$restore_tmp"
+	local status=$?
+	if ! resume_service; then
+		status=1
+	fi
+	rm -f "$restore_tmp" "$restore_tmp-wal" "$restore_tmp-shm"
+	if [[ -n "$current_backup" && "$snapshot_ready" == 0 ]]; then
+		rm -f "$current_backup" "$current_backup-wal" "$current_backup-shm"
+	fi
+	exit "$status"
 }
 trap cleanup EXIT
+
+# SQLite dot commands decode C-style escapes inside double-quoted filenames.
+sqlite_filename() {
+	local value="$1"
+	value="${value//\\/\\\\}"
+	value="${value//\"/\\\"}"
+	value="${value//$'\n'/\\n}"
+	value="${value//$'\r'/\\r}"
+	value="${value//$'\t'/\\t}"
+	printf '"%s"' "$value"
+}
 
 case "$BACKUP_FILE" in
 	*.gz)
@@ -48,22 +85,47 @@ if [[ "$integrity" != "ok" ]]; then
 	exit 1
 fi
 
-if systemctl list-unit-files "$APP_NAME.service" >/dev/null 2>&1; then
-	systemctl stop "$APP_NAME.service"
+if command -v systemctl >/dev/null 2>&1; then
+	if ! service_state="$(systemctl show "$APP_NAME.service" --property=ActiveState --value)"; then
+		echo "Unable to determine $APP_NAME.service state; restore stopped." >&2
+		exit 1
+	fi
+	case "$service_state" in
+		active)
+			systemctl stop "$APP_NAME.service"
+			service_stopped=1
+			;;
+		inactive|failed)
+			;;
+		*)
+			echo "$APP_NAME.service is $service_state; wait for a stable service state before restoring." >&2
+			exit 1
+			;;
+	esac
 fi
 
 if [[ -f "$DB_PATH" ]]; then
-	current_backup="$DB_PATH.pre-restore-$(date -u +%Y%m%dT%H%M%SZ)"
-	cp "$DB_PATH" "$current_backup"
+	current_backup="$(mktemp "$DB_PATH.pre-restore-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+	# A raw file copy can omit committed WAL data after a crash.
+	sqlite3 "$DB_PATH" ".backup $(sqlite_filename "$current_backup")"
+	# Keep the new safety snapshot portable as one file, independent of WAL.
+	sqlite3 "$current_backup" 'PRAGMA journal_mode=DELETE;' >/dev/null
+	if [[ "$(sqlite3 "$current_backup" 'PRAGMA integrity_check;')" != "ok" ]]; then
+		echo "Current database snapshot failed integrity check; restore stopped." >&2
+		exit 1
+	fi
+	# Some SQLite builds retain an unused shared-memory file after leaving WAL
+	# mode. These belong only to this new, closed, rollback-mode snapshot.
+	rm -f "$current_backup-wal" "$current_backup-shm"
+	snapshot_ready=1
+	echo "Previous database saved to $current_backup"
 fi
 
-install -m 0644 "$restore_tmp" "$DB_PATH"
+# Let SQLite replace its contents transactionally, including any existing WAL.
+# Keeping the database file also preserves its existing ownership and mode.
+umask 077
+sqlite3 "$DB_PATH" ".restore $(sqlite_filename "$restore_tmp")"
 
-if systemctl list-unit-files "$APP_NAME.service" >/dev/null 2>&1; then
-	systemctl start "$APP_NAME.service"
-fi
+resume_service
 
 echo "Restored $DB_PATH from $BACKUP_FILE"
-if [[ -n "$current_backup" ]]; then
-	echo "Previous database copied to $current_backup"
-fi
