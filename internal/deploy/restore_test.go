@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"compress/gzip"
 	"database/sql"
 	"os"
@@ -78,7 +79,7 @@ func TestRestoreFailureKeepsCurrentDataAndResumesStoppedService(t *testing.T) {
 }
 
 func TestRestoreRejectsBeforeChangingDataOrService(t *testing.T) {
-	for _, kind := range []string{"confirmation", "corrupt backup", "invalid SQLite", "service lookup failure", "unknown service state", "stop failure"} {
+	for _, kind := range []string{"confirmation", "corrupt backup", "invalid SQLite", "schema lookup failure", "service lookup failure", "unknown service state", "stop failure"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newRestoreFixture(t)
 			var env, actions []string
@@ -94,6 +95,8 @@ func TestRestoreRejectsBeforeChangingDataOrService(t *testing.T) {
 				if err := os.WriteFile(f.backup, []byte("not a SQLite file"), 0600); err != nil {
 					t.Fatal(err)
 				}
+			case "schema lookup failure":
+				env = []string{"RESTORE_TEST_FAIL=schema"}
 			case "unknown service state":
 				env, actions = []string{"RESTORE_TEST_SERVICE_STATE=activating"}, []string{"show"}
 			case "service lookup failure":
@@ -124,6 +127,79 @@ func TestRestoreRequiresProvisionedDestination(t *testing.T) {
 		t.Fatal("restore silently created a caller-owned database", err)
 	}
 	f.requireServiceActions()
+}
+
+func TestRestoreRejectsEmptyBackupsBeforeServiceOrDataChanges(t *testing.T) {
+	for _, kind := range []string{"zero-byte", "empty-gzip", "empty-sqlite", "internal-tables-only"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newRestoreFixture(t)
+			f.sql(f.database, "CREATE TABLE daily_readings(reading_date TEXT,title TEXT); INSERT INTO daily_readings VALUES('2026-01-01','checkpointed reading');")
+			before, err := os.ReadFile(f.database)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.backup = filepath.Join(filepath.Dir(f.database), "empty.sqlite")
+			switch kind {
+			case "zero-byte":
+				if err := os.WriteFile(f.backup, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "empty-gzip":
+				f.backup += ".gz"
+				file, err := os.Create(f.backup)
+				if err != nil {
+					t.Fatal(err)
+				}
+				compressed := gzip.NewWriter(file)
+				if err := compressed.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			case "empty-sqlite":
+				f.sql(f.backup, "PRAGMA user_version=1;")
+			case "internal-tables-only":
+				f.sql(f.backup, "CREATE TABLE removed(id INTEGER PRIMARY KEY AUTOINCREMENT); DROP TABLE removed;")
+			}
+			output := f.restore(false)
+			if !strings.Contains(output, "Backup contains no user tables") {
+				t.Fatal("empty backup rejection lacks a useful diagnostic", output)
+			}
+			f.requireServiceActions()
+			after, err := os.ReadFile(f.database)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("rejected restore changed destination bytes", err)
+			}
+			f.requireRows(f.database, "checkpointed reading")
+			if got := f.sql(f.database, "SELECT reading_date,title FROM daily_readings;"); got != "2026-01-01|checkpointed reading" {
+				t.Fatal("rejected restore changed saved reading history", got)
+			}
+			if len(f.snapshots()) != 0 {
+				t.Fatal("rejected empty backup reached the safety snapshot stage")
+			}
+		})
+	}
+}
+
+func TestRestoreAcceptsUserTablesWithNoData(t *testing.T) {
+	for _, table := range []string{"readings", "sqlitex_readings"} {
+		t.Run(table, func(t *testing.T) {
+			f := newRestoreFixture(t)
+			f.backup = filepath.Join(filepath.Dir(f.database), "empty-data.sqlite")
+			f.sql(f.backup, "CREATE TABLE "+table+"(title TEXT);")
+			f.restore(true)
+			if got := f.sql(f.database, "SELECT count(*) FROM "+table+";"); got != "0" {
+				t.Fatal("valid schema with no data was not restored", got)
+			}
+			f.requireServiceActions("show", "stop", "start")
+			snapshots := f.snapshots()
+			if len(snapshots) != 1 {
+				t.Fatal("valid restore did not retain its safety snapshot", snapshots)
+			}
+			f.requireRows(snapshots[0], "checkpointed reading")
+		})
+	}
 }
 
 func TestRestoreReportsRestartFailureWithoutRetrying(t *testing.T) {
@@ -216,6 +292,7 @@ set -eu
 case "${2:-}" in
   '.backup '*) [ "${RESTORE_TEST_FAIL:-}" != backup ] || exit 70 ;;
   '.restore '*) [ "${RESTORE_TEST_FAIL:-}" != restore ] || exit 71 ;;
+  *sqlite_master*) [ "${RESTORE_TEST_FAIL:-}" != schema ] || exit 72 ;;
 esac
 exec "$RESTORE_TEST_SQLITE3" "$@"
 `,

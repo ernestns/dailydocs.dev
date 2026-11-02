@@ -239,7 +239,10 @@ use.
 
 The restore script:
 
-- verifies the backup with `PRAGMA integrity_check` before stopping a service
+- verifies the backup with `PRAGMA integrity_check` and requires at least one
+  user table before inspecting or stopping a service; empty files and SQLite
+  files without user tables are rejected, while tables with no rows are
+  allowed
 - stops `dailydocs.service` only if it is active, and rejects uncertain service states
 - saves a private, uniquely named `.pre-restore-*` snapshot using SQLite's backup
   mechanism, including any committed WAL data left after a crash

@@ -772,7 +772,15 @@ func failRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int
 	// A provider deadline/cancellation must not leave the global running slot occupied.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	updated, err := conn.ExecContext(ctx, `
+	// Release the running slot and finalize its catalog in one transaction.
+	// Otherwise a new attempt can finish between these writes, and this older
+	// cleanup can overwrite the new catalog using an obsolete reading count.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin topic search failure cleanup: %w", err)
+	}
+	defer tx.Rollback()
+	updated, err := tx.ExecContext(ctx, `
 		UPDATE topic_search_runs
 		SET status = 'failed',
 			stage = '',
@@ -788,7 +796,7 @@ func failRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int
 	} else if count == 0 {
 		return nil
 	}
-	available, err := AvailableReadings(ctx, conn, topicID)
+	available, err := AvailableReadings(ctx, tx, topicID)
 	if err != nil {
 		return err
 	}
@@ -796,10 +804,13 @@ func failRunAndTopic(ctx context.Context, conn *sql.DB, topicID int64, runID int
 	if available >= MinimumUsefulResults {
 		status = "active"
 	}
-	if _, err := conn.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
         UPDATE topics SET status=?, updated_at=datetime('now') WHERE id=?
     `, status, topicID); err != nil {
 		return fmt.Errorf("record failed topic status: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit topic search failure cleanup: %w", err)
 	}
 	return nil
 }

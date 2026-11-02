@@ -221,6 +221,9 @@ allowing up to 20 seconds for failure and partial-result persistence before
 closing SQLite. Waiting requests remain saved without starting provider calls.
 Completed cleanup permits immediate explicit retries after restart; abrupt
 termination retains the existing stale-run protection.
+Failure cleanup commits the failed attempt and its catalog status together, so
+a new attempt cannot be admitted between those updates and then have its
+successful catalog overwritten by the older cleanup.
 
 Default processing limits for the public and CLI generation paths:
 

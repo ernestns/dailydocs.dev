@@ -85,6 +85,14 @@ if [[ "$integrity" != "ok" ]]; then
 	exit 1
 fi
 
+# SQLite considers zero-byte files and empty databases valid. Neither is a
+# usable application backup; restoring one would silently remove every table.
+user_tables="$(sqlite3 "$restore_tmp" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*';")"
+if [[ "$user_tables" == "0" ]]; then
+	echo "Backup contains no user tables; restore stopped." >&2
+	exit 1
+fi
+
 if command -v systemctl >/dev/null 2>&1; then
 	if ! service_state="$(systemctl show "$APP_NAME.service" --property=ActiveState --value)"; then
 		echo "Unable to determine $APP_NAME.service state; restore stopped." >&2
